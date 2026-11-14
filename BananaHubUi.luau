@@ -13,11 +13,11 @@
     No key system, no roles, no tiers. Everything is local.
 ]]
 
--- BANANAHUB_BUILD_BLACK_3
+-- BANANAHUB_BUILD_BLACK_4
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (the old blue /
 -- see-through build) can never be loaded again.
-local BUILD = "black-3"
+local BUILD = "black-4"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -158,6 +158,10 @@ local function MakeDraggable(topbarobject, object)
 				StartPosition.Y.Scale,
 				StartPosition.Y.Offset + Delta.Y
 			)
+			-- remember where the user parked the window so the open/close
+			-- animation reopens it in the same spot
+			frame:SetAttribute("BH_RestingX", pos.X.Offset)
+			frame:SetAttribute("BH_RestingY", pos.Y.Offset)
 			TweenService:Create(frame, TweenInfo.new(0.2), { Position = pos }):Play()
 		end
 
@@ -209,6 +213,10 @@ local function MakeDraggable(topbarobject, object)
 			local Delta = input.Position - DragStart
 			local newWidth = math.max(StartSize.X.Offset + Delta.X, minSizeX)
 			local newHeight = math.max(StartSize.Y.Offset + Delta.Y, minSizeY)
+			-- remember the user's size so the open/close animation zooms back
+			-- to it instead of the size the script originally requested
+			frame:SetAttribute("BH_RestingW", newWidth)
+			frame:SetAttribute("BH_RestingH", newHeight)
 			TweenService:Create(frame, TweenInfo.new(0.2), { Size = UDim2.new(0, newWidth, 0, newHeight) }):Play()
 		end
 
@@ -897,7 +905,7 @@ function BananaHub:Window(GuiConfig)
 	local PlayerName = Instance.new("TextLabel")
 	PlayerName.Name = "PlayerName"
 	PlayerName.Font = Enum.Font.GothamBold
-	PlayerName.Text = "Welcome, " .. LocalPlayer.DisplayName
+	PlayerName.Text = LocalPlayer.DisplayName
 	PlayerName.TextColor3 = Color3.fromRGB(180, 180, 180)
 	PlayerName.TextSize = 11
 	PlayerName.TextXAlignment = Enum.TextXAlignment.Left
@@ -941,9 +949,81 @@ function BananaHub:Window(GuiConfig)
 		if toggle then pcall(function() toggle:Destroy() end) end
 	end
 
+	-- Smooth open/close. The window zooms in/out with a Quart ease instead of
+	-- popping in and out; it stays interactable the whole time and a close can
+	-- interrupt an in-progress open (and vice versa).
+	local BASE_POS = UDim2.new(0.5, 0, 0.5, 0)
+	local BASE_SIZE = nil   -- captured after the requested size is applied
+	local SizeTween = nil
+
+	local function CancelSizeTween()
+		if SizeTween then
+			pcall(function() SizeTween:Cancel() end)
+			SizeTween = nil
+		end
+	end
+
+	local function RestingSize()
+		if not DropShadowHolder then return nil end
+		local w = DropShadowHolder:GetAttribute("BH_RestingW")
+		local h = DropShadowHolder:GetAttribute("BH_RestingH")
+		if typeof(w) == "number" and typeof(h) == "number" and w > 0 and h > 0 then
+			return UDim2.new(0, w, 0, h)
+		end
+		return BASE_SIZE or DropShadowHolder.Size
+	end
+
+	-- The spot the user dragged the window to (falls back to dead centre).
+	local function RestingPos()
+		if not DropShadowHolder then return BASE_POS end
+		local x = DropShadowHolder:GetAttribute("BH_RestingX")
+		local y = DropShadowHolder:GetAttribute("BH_RestingY")
+		if typeof(x) == "number" and typeof(y) == "number" then
+			return UDim2.new(0.5, x, 0.5, y)
+		end
+		return BASE_POS
+	end
+
+	local function PlayOpen()
+		if not DropShadowHolder then return end
+		CancelSizeTween()
+		local target = RestingSize()
+		DropShadowHolder.Visible = true
+		DropShadowHolder.AnchorPoint = Vector2.new(0.5, 0.5)
+		DropShadowHolder.Position = RestingPos()
+		DropShadowHolder.Size = UDim2.new(
+			0, math.floor(target.X.Offset * 0.9),
+			0, math.floor(target.Y.Offset * 0.9))
+		SizeTween = TweenService:Create(
+			DropShadowHolder,
+			TweenInfo.new(0.26, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+			{ Size = target })
+		SizeTween:Play()
+	end
+
+	local function PlayClose()
+		if not DropShadowHolder then return end
+		CancelSizeTween()
+		local target = RestingSize()
+		SizeTween = TweenService:Create(
+			DropShadowHolder,
+			TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+			{ Size = UDim2.new(
+				0, math.floor(target.X.Offset * 0.9),
+				0, math.floor(target.Y.Offset * 0.9)) })
+		SizeTween:Play()
+		local thisTween = SizeTween
+		SizeTween.Completed:Connect(function()
+			if SizeTween ~= thisTween then return end   -- superseded by a new tween
+			if not DropShadowHolder then return end
+			DropShadowHolder.Visible = false
+			DropShadowHolder.Size = target
+		end)
+	end
+
 	Min.Activated:Connect(function()
 		CircleClick(Min, Mouse.X, Mouse.Y)
-		DropShadowHolder.Visible = false
+		PlayClose()
 	end)
 
 	Close.Activated:Connect(function()
@@ -955,16 +1035,16 @@ function BananaHub:Window(GuiConfig)
 	UserInputService.InputBegan:Connect(function(input, gpe)
 		if gpe then return end
 		if input.KeyCode == ToggleKey and DropShadowHolder then
-			DropShadowHolder.Visible = not DropShadowHolder.Visible
+			if DropShadowHolder.Visible then PlayClose() else PlayOpen() end
 		end
 	end)
 
 	function GuiFunc:SetVisible(v)
-		DropShadowHolder.Visible = v ~= false
+		if v == false then PlayClose() else PlayOpen() end
 	end
 
 	function GuiFunc:Toggle()
-		DropShadowHolder.Visible = not DropShadowHolder.Visible
+		if DropShadowHolder.Visible then PlayClose() else PlayOpen() end
 	end
 
 	function GuiFunc:SetPanelBackground() end
@@ -985,6 +1065,9 @@ function BananaHub:Window(GuiConfig)
 	if typeof(requested) == "UDim2" and (requested.X.Offset > 0 or requested.Y.Offset > 0) then
 		DropShadowHolder.Size = UDim2.new(0, math.max(requested.X.Offset, 420), 0, math.max(requested.Y.Offset, 300))
 	end
+	BASE_SIZE = DropShadowHolder.Size
+	-- Animate in on first launch too, so the window never pops into place.
+	task.defer(PlayOpen)
 
 	GuiFunc.__gui = BananaHubGui
 	GuiFunc.__nameTab = NameTab
@@ -2328,6 +2411,6 @@ function BananaHub:SetTheme() end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_3"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_4"
 
 return BananaHub
