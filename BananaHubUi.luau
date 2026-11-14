@@ -2016,7 +2016,7 @@ function BananaHub:Window(GuiConfig)
 				end)
 
 				if locked then
-					MainButton.BackgroundTransparency = 0.97
+					MainButton.BackgroundTransparency = 0.98
 					ButtonLabel.TextColor3 = Color3.fromRGB(140, 140, 140)
 				end
 
