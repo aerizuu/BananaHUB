@@ -82,6 +82,11 @@ local function LoadConfigElements()
 	end
 end
 
+-- Panel surfaces. The window is a black card; rows sit a shade above it so
+-- the background picture only shows faintly through them.
+local SURFACE = Color3.fromRGB(18, 18, 18)
+local SURFACE_SOFT = Color3.fromRGB(30, 30, 30)
+
 -- Tab icons. Only the ones Banana Hub's tabs ask for are kept.
 local Icons = {
 	fish      = "rbxassetid://97167558235554",
@@ -549,9 +554,46 @@ function BananaHub:Window(GuiConfig)
 	-- A numeric Theme is an image asset id (the original convention). Soreya
 	-- passes a palette name ("Dark"), which is not an asset, so fall through to
 	-- the solid dark panel instead of loading a broken image.
+	--
+	-- Background = picture for the panel. Roblox only draws rbxassetid images,
+	-- so an http(s) URL is fetched and turned into a custom asset first.
 	local themeAsset = GuiConfig.Theme
 	if type(themeAsset) == "number" then themeAsset = tostring(themeAsset) end
-	if type(themeAsset) == "string" and themeAsset:match("^%d+$") then
+
+	local panelImage
+	local background = GuiConfig.Background
+	if type(background) == "string" and background ~= "" then
+		if background:match("^https?://") then
+			-- Executors that expose getcustomasset can turn the downloaded file
+			-- into something Roblox will actually draw. Without it, hand the URL
+			-- to the ImageLabel anyway: patched executors render it, stock ones
+			-- just show the black panel.
+			panelImage = background
+			if writefile and getcustomasset then
+				local ext = background:match("%.(%a+)%s*$") or "png"
+				local path = "BananaHubBg." .. ext
+				local fetched, data = pcall(function() return game:HttpGet(background, true) end)
+				if fetched and type(data) == "string" and #data > 0 then
+					if pcall(writefile, path, data) then
+						local okAsset, asset = pcall(getcustomasset, path)
+						if okAsset and type(asset) == "string" then panelImage = asset end
+					end
+				end
+			end
+		else
+			panelImage = background
+		end
+	end
+
+	if panelImage then
+		Main:Destroy()
+		Main = Instance.new("ImageLabel")
+		Main.Image = panelImage
+		Main.ScaleType = Enum.ScaleType.Crop
+		Main.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		Main.BackgroundTransparency = 0
+		Main.ImageTransparency = tonumber(GuiConfig.BackgroundTransparency) or 0.25
+	elseif type(themeAsset) == "string" and themeAsset:match("^%d+$") then
 		Main:Destroy()
 		Main = Instance.new("ImageLabel")
 		Main.Image = "rbxassetid://" .. themeAsset
@@ -560,7 +602,7 @@ function BananaHub:Window(GuiConfig)
 		Main.ImageTransparency = GuiConfig.ThemeTransparency or 0.15
 	else
 		Main.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-		Main.BackgroundTransparency = 0.15
+		Main.BackgroundTransparency = 0
 	end
 
 	Main.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -1092,8 +1134,8 @@ function BananaHub:Window(GuiConfig)
 			Section.Parent = ScrolLayers
 
 			SectionReal.AnchorPoint = Vector2.new(0.5, 0)
-			SectionReal.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-			SectionReal.BackgroundTransparency = 0.935
+			SectionReal.BackgroundColor3 = SURFACE
+			SectionReal.BackgroundTransparency = 0.2
 			SectionReal.BorderSizePixel = 0
 			SectionReal.Position = UDim2.new(0.5, 0, 0, 0)
 			SectionReal.Size = UDim2.new(1, -2, 0, 30)
@@ -1284,8 +1326,8 @@ function BananaHub:Window(GuiConfig)
 				local ToggleCircle = Instance.new("Frame")
 				local UICorner23 = Instance.new("UICorner")
 
-				Toggle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				Toggle.BackgroundTransparency = 0.935
+				Toggle.BackgroundColor3 = SURFACE
+				Toggle.BackgroundTransparency = 0.2
 				Toggle.BorderSizePixel = 0
 				Toggle.LayoutOrder = nextOrder()
 				Toggle.Size = UDim2.new(1, 0, 0, 46)
@@ -1331,7 +1373,8 @@ function BananaHub:Window(GuiConfig)
 				ToggleButton.Parent = Toggle
 
 				FeatureFrame2.AnchorPoint = Vector2.new(1, 0.5)
-				FeatureFrame2.BackgroundTransparency = 0.92
+				FeatureFrame2.BackgroundColor3 = SURFACE_SOFT
+				FeatureFrame2.BackgroundTransparency = 0.25
 				FeatureFrame2.BorderSizePixel = 0
 				FeatureFrame2.Position = UDim2.new(1, -15, 0.5, 0)
 				FeatureFrame2.Size = UDim2.new(0, 30, 0, 15)
@@ -1370,7 +1413,7 @@ function BananaHub:Window(GuiConfig)
 						TweenService:Create(ToggleTitle, TweenInfo.new(0.2), { TextColor3 = Color3.fromRGB(231, 231, 231) }):Play()
 						TweenService:Create(ToggleCircle, TweenInfo.new(0.2), { Position = UDim2.new(0, 0, 0, 0) }):Play()
 						TweenService:Create(UIStroke8, TweenInfo.new(0.2), { Color = Color3.fromRGB(255, 255, 255), Transparency = 0.9 }):Play()
-						TweenService:Create(FeatureFrame2, TweenInfo.new(0.2), { BackgroundColor3 = Color3.fromRGB(255, 255, 255), BackgroundTransparency = 0.92 }):Play()
+						TweenService:Create(FeatureFrame2, TweenInfo.new(0.2), { BackgroundColor3 = SURFACE_SOFT, BackgroundTransparency = 0.25 }):Play()
 					end
 
 					if not applying and not silent and type(cfg.Callback) == "function" then
@@ -1431,8 +1474,8 @@ function BananaHub:Window(GuiConfig)
 				local SliderCircle = Instance.new("Frame")
 				local UICorner19 = Instance.new("UICorner")
 
-				Slider.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				Slider.BackgroundTransparency = 0.935
+				Slider.BackgroundColor3 = SURFACE
+				Slider.BackgroundTransparency = 0.2
 				Slider.BorderSizePixel = 0
 				Slider.LayoutOrder = nextOrder()
 				Slider.Size = UDim2.new(1, 0, 0, 46)
@@ -1473,8 +1516,8 @@ function BananaHub:Window(GuiConfig)
 				TextBox.Parent = SliderInput
 
 				SliderFrame.AnchorPoint = Vector2.new(1, 0.5)
-				SliderFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				SliderFrame.BackgroundTransparency = 0.8
+				SliderFrame.BackgroundColor3 = SURFACE_SOFT
+				SliderFrame.BackgroundTransparency = 0.35
 				SliderFrame.BorderSizePixel = 0
 				SliderFrame.Position = UDim2.new(1, -20, 0.5, 0)
 				SliderFrame.Size = UDim2.new(0, 100, 0, 3)
@@ -1604,8 +1647,8 @@ function BananaHub:Window(GuiConfig)
 				local OptionImg = Instance.new("ImageLabel")
 				local OptionList = Instance.new("Frame")
 
-				Dropdown.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				Dropdown.BackgroundTransparency = 0.935
+				Dropdown.BackgroundColor3 = SURFACE
+				Dropdown.BackgroundTransparency = 0.2
 				Dropdown.BorderSizePixel = 0
 				Dropdown.LayoutOrder = nextOrder()
 				Dropdown.Size = UDim2.new(1, 0, 0, 46)
@@ -1627,8 +1670,8 @@ function BananaHub:Window(GuiConfig)
 				DropdownTitle.Parent = Dropdown
 
 				SelectOptionsFrame.AnchorPoint = Vector2.new(1, 0.5)
-				SelectOptionsFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				SelectOptionsFrame.BackgroundTransparency = 0.95
+				SelectOptionsFrame.BackgroundColor3 = SURFACE
+				SelectOptionsFrame.BackgroundTransparency = 0.15
 				SelectOptionsFrame.Position = UDim2.new(1, -7, 0.5, 0)
 				SelectOptionsFrame.Size = UDim2.new(0, 148, 0, 26)
 				SelectOptionsFrame.Name = "SelectOptionsFrame"
@@ -1890,8 +1933,8 @@ function BananaHub:Window(GuiConfig)
 				local UICorner13 = Instance.new("UICorner")
 				local InputTextBox = Instance.new("TextBox")
 
-				Input.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				Input.BackgroundTransparency = 0.935
+				Input.BackgroundColor3 = SURFACE
+				Input.BackgroundTransparency = 0.2
 				Input.BorderSizePixel = 0
 				Input.LayoutOrder = nextOrder()
 				Input.Size = UDim2.new(1, 0, 0, 68)
@@ -1912,8 +1955,8 @@ function BananaHub:Window(GuiConfig)
 				InputTitle.Name = "InputTitle"
 				InputTitle.Parent = Input
 
-				InputFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				InputFrame.BackgroundTransparency = 0.95
+				InputFrame.BackgroundColor3 = SURFACE_SOFT
+				InputFrame.BackgroundTransparency = 0.3
 				InputFrame.BorderSizePixel = 0
 				InputFrame.ClipsDescendants = true
 				InputFrame.Position = UDim2.new(0, 10, 0, 30)
@@ -1980,8 +2023,8 @@ function BananaHub:Window(GuiConfig)
 
 				MainButton.Font = Enum.Font.GothamBold
 				MainButton.Text = ""
-				MainButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				MainButton.BackgroundTransparency = 0.935
+				MainButton.BackgroundColor3 = SURFACE
+				MainButton.BackgroundTransparency = 0.2
 				MainButton.BorderSizePixel = 0
 				MainButton.Size = UDim2.new(1, 0, 1, 0)
 				MainButton.Name = "MainButton"
@@ -2016,7 +2059,7 @@ function BananaHub:Window(GuiConfig)
 				end)
 
 				if locked then
-					MainButton.BackgroundTransparency = 0.98
+					MainButton.BackgroundTransparency = 0.97
 					ButtonLabel.TextColor3 = Color3.fromRGB(140, 140, 140)
 				end
 
@@ -2033,8 +2076,8 @@ function BananaHub:Window(GuiConfig)
 				local ParagraphTitle = Instance.new("TextLabel")
 				local ParagraphContent = Instance.new("TextLabel")
 
-				Paragraph.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-				Paragraph.BackgroundTransparency = 0.935
+				Paragraph.BackgroundColor3 = SURFACE
+				Paragraph.BackgroundTransparency = 0.2
 				Paragraph.BorderSizePixel = 0
 				Paragraph.LayoutOrder = nextOrder()
 				Paragraph.Size = UDim2.new(1, 0, 0, 44)
