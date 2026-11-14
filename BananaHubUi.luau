@@ -485,10 +485,10 @@ function BananaHub:Window(GuiConfig)
 	GuiConfig = GuiConfig or {}
 	GuiConfig.Title = GuiConfig.Title or "Banana Hub"
 	GuiConfig.Footer = GuiConfig.Footer or GuiConfig.Author or "Banana Hub"
-	GuiConfig.Color = GuiConfig.Color or Color3.fromRGB(0, 255, 255)
+	GuiConfig.Color = GuiConfig.Color or Color3.fromRGB(255, 255, 255)
 	GuiConfig["Tab Width"] = GuiConfig["Tab Width"] or 120
 	GuiConfig.Version = GuiConfig.Version or 1
-	GuiConfig.Icon = GuiConfig.Icon or "rbxassetid://137004403340469"
+	GuiConfig.Icon = GuiConfig.Icon or "rbxassetid://125326185088678"
 	GuiConfig.Image = GuiConfig.Image or GuiConfig.Icon
 
 	CURRENT_VERSION = GuiConfig.Version
@@ -518,7 +518,6 @@ function BananaHub:Window(GuiConfig)
 	local LayersFolder = Instance.new("Folder")
 	local LayersPageLayout = Instance.new("UIPageLayout")
 	local MainStroke = Instance.new("UIStroke")
-	local ThemeImage = Instance.new("ImageLabel")
 
 	BananaHubGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	BananaHubGui.Name = "BananaHub"
@@ -634,35 +633,6 @@ function BananaHub:Window(GuiConfig)
 	TitleIcon.Size = UDim2.new(0, 20, 0, 20)
 	TitleIcon.Image = GuiConfig.Icon
 
-	local ImageWrapper = Instance.new("Frame")
-	ImageWrapper.Name = "ImageWrapper"
-	ImageWrapper.Parent = Main
-	ImageWrapper.BackgroundTransparency = 1
-	ImageWrapper.Size = UDim2.new(1, 0, 1, 0)
-	ImageWrapper.ZIndex = 0
-	ImageWrapper.ClipsDescendants = true
-
-	ThemeImage.Name = "ThemeImage"
-	ThemeImage.Parent = ImageWrapper
-	ThemeImage.BackgroundTransparency = 1
-	ThemeImage.AnchorPoint = Vector2.new(1, 1)
-	ThemeImage.Position = UDim2.new(1, 0, 1, 0)
-	ThemeImage.Size = UDim2.new(0.55, 0, 1, 0)
-	ThemeImage.ZIndex = 0
-	ThemeImage.Image = "rbxassetid://16787098319"
-	ThemeImage.ImageTransparency = 0.45
-	ThemeImage.ScaleType = Enum.ScaleType.Fit
-
-	local Gradient = Instance.new("UIGradient")
-	Gradient.Rotation = 135
-	Gradient.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 1),
-		NumberSequenceKeypoint.new(0.45, 0.8),
-		NumberSequenceKeypoint.new(0.75, 0.2),
-		NumberSequenceKeypoint.new(1, 0),
-	})
-	Gradient.Parent = ThemeImage
-
 	TextLabel.Font = Enum.Font.GothamBold
 	TextLabel.Text = GuiConfig.Title
 	TextLabel.TextColor3 = GuiConfig.Color
@@ -677,10 +647,10 @@ function BananaHub:Window(GuiConfig)
 	TextLabel1.Text = GuiConfig.Footer
 	TextLabel1.TextColor3 = GuiConfig.Color
 	TextLabel1.TextSize = 14
-	TextLabel1.TextXAlignment = Enum.TextXAlignment.Left
 	TextLabel1.BackgroundTransparency = 0.999
-	TextLabel1.Size = UDim2.new(1, -(TextLabel.TextBounds.X + 104), 1, 0)
-	TextLabel1.Position = UDim2.new(0, 25 + TextLabel.TextBounds.X + 10, 0, 0)
+	TextLabel1.TextXAlignment = Enum.TextXAlignment.Right
+	TextLabel1.Size = UDim2.new(0, 240, 1, 0)
+	TextLabel1.Position = UDim2.new(1, -310, 0, 0)
 	TextLabel1.Parent = Top
 
 	Close.Font = Enum.Font.SourceSans
