@@ -13,6 +13,12 @@
     No key system, no roles, no tiers. Everything is local.
 ]]
 
+-- BANANAHUB_BUILD_BLACK_3
+-- Build marker. The Soreya scripts look for this exact string before they
+-- accept a copy of this library, so a stale workspace cache (the old blue /
+-- see-through build) can never be loaded again.
+local BUILD = "black-3"
+
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local UserInputService = game:GetService("UserInputService")
@@ -492,6 +498,122 @@ function BananaHub:Window(GuiConfig)
 	GuiConfig.Image = GuiConfig.Image or GuiConfig.Icon
 
 	CURRENT_VERSION = GuiConfig.Version
+
+	-- Locked-feature panel. A free-script widget keeps its normal row on top and
+	-- gets a black box underneath with a padlock and "Buy Premium to unlock this
+	-- feature". The padlock is drawn from frames, so it needs no asset id.
+	local LOCK_TEXT = "Buy Premium to unlock this feature"
+
+	-- Draws a padlock out of a stroked round shackle plus a rounded body.
+	local function MakePadlock(parent, size, zIndex)
+		local Icon = Instance.new("Frame")
+		Icon.Name = "LockIcon"
+		Icon.AnchorPoint = Vector2.new(0.5, 0)
+		Icon.BackgroundTransparency = 1
+		Icon.Size = UDim2.new(0, size, 0, math.floor(size * 1.25))
+		Icon.ZIndex = zIndex
+		Icon.Parent = parent
+
+		local Shackle = Instance.new("Frame")
+		Shackle.Name = "Shackle"
+		Shackle.AnchorPoint = Vector2.new(0.5, 0)
+		Shackle.BackgroundTransparency = 1
+		Shackle.Position = UDim2.new(0.5, 0, 0, 0)
+		Shackle.Size = UDim2.new(0, math.floor(size * 0.72), 0, math.floor(size * 0.72))
+		Shackle.ZIndex = zIndex
+		Shackle.Parent = Icon
+
+		local ShackleCorner = Instance.new("UICorner")
+		ShackleCorner.CornerRadius = UDim.new(1, 0)
+		ShackleCorner.Parent = Shackle
+
+		local ShackleStroke = Instance.new("UIStroke")
+		ShackleStroke.Color = GuiConfig.Color
+		ShackleStroke.Thickness = math.max(1.5, size * 0.11)
+		ShackleStroke.Parent = Shackle
+
+		local Body = Instance.new("Frame")
+		Body.Name = "LockBody"
+		Body.AnchorPoint = Vector2.new(0.5, 1)
+		Body.BackgroundColor3 = GuiConfig.Color
+		Body.BorderSizePixel = 0
+		Body.Position = UDim2.new(0.5, 0, 1, 0)
+		Body.Size = UDim2.new(0, size, 0, math.floor(size * 0.68))
+		Body.ZIndex = zIndex + 1
+		Body.Parent = Icon
+
+		local BodyCorner = Instance.new("UICorner")
+		BodyCorner.CornerRadius = UDim.new(0, math.max(2, math.floor(size * 0.18)))
+		BodyCorner.Parent = Body
+
+		local Keyhole = Instance.new("Frame")
+		Keyhole.Name = "Keyhole"
+		Keyhole.AnchorPoint = Vector2.new(0.5, 0.5)
+		Keyhole.BackgroundColor3 = Color3.fromRGB(8, 8, 8)
+		Keyhole.BorderSizePixel = 0
+		Keyhole.Position = UDim2.new(0.5, 0, 0.5, 0)
+		Keyhole.Size = UDim2.new(0, math.max(2, math.floor(size * 0.16)), 0, math.max(3, math.floor(size * 0.3)))
+		Keyhole.ZIndex = zIndex + 2
+		Keyhole.Parent = Body
+
+		local KeyholeCorner = Instance.new("UICorner")
+		KeyholeCorner.CornerRadius = UDim.new(1, 0)
+		KeyholeCorner.Parent = Keyhole
+
+		return Icon
+	end
+
+	local function AddLockOverlay(widget, rowHeight)
+		widget.Size = UDim2.new(1, 0, 0, rowHeight + 64)
+
+		local Box = Instance.new("Frame")
+		Box.Name = "LockBox"
+		Box.BackgroundColor3 = Color3.fromRGB(8, 8, 8)
+		Box.BackgroundTransparency = 0.1
+		Box.BorderSizePixel = 0
+		Box.Position = UDim2.new(0, 4, 0, rowHeight + 2)
+		Box.Size = UDim2.new(1, -8, 0, 58)
+		Box.ZIndex = 5
+		Box.Parent = widget
+
+		local BoxCorner = Instance.new("UICorner")
+		BoxCorner.CornerRadius = UDim.new(0, 4)
+		BoxCorner.Parent = Box
+
+		local BoxStroke = Instance.new("UIStroke")
+		BoxStroke.Color = GuiConfig.Color
+		BoxStroke.Transparency = 0.9
+		BoxStroke.Thickness = 1
+		BoxStroke.Parent = Box
+
+		local Icon = MakePadlock(Box, 18, 6)
+		Icon.Position = UDim2.new(0.5, 0, 0, 7)
+
+		local Label = Instance.new("TextLabel")
+		Label.Name = "LockLabel"
+		Label.Font = Enum.Font.GothamBold
+		Label.Text = LOCK_TEXT
+		Label.TextColor3 = Color3.fromRGB(235, 235, 235)
+		Label.TextSize = 12
+		Label.TextXAlignment = Enum.TextXAlignment.Center
+		Label.BackgroundTransparency = 1
+		Label.Position = UDim2.new(0, 6, 0, 36)
+		Label.Size = UDim2.new(1, -12, 0, 14)
+		Label.ZIndex = 6
+		Label.Parent = Box
+
+		-- Once per section: a small padlock in the header, like the reference.
+		local section = widget.Parent and widget.Parent.Parent
+		if section and section.Name == "Section" and not section:GetAttribute("BH_Locked") then
+			section:SetAttribute("BH_Locked", true)
+			local real = section:FindFirstChild("SectionReal")
+			if real then
+				local head = MakePadlock(real, 9, 6)
+				head.AnchorPoint = Vector2.new(1, 0.5)
+				head.Position = UDim2.new(1, -32, 0.5, 0)
+			end
+		end
+	end
 
 	local GuiFunc = {}
 
@@ -1277,9 +1399,6 @@ function BananaHub:Window(GuiConfig)
 				cfg = cfg or {}
 				local widgetTitle = tostring(cfg.Title or "Toggle")
 				local locked = cfg.Locked == true
-				if locked then
-					widgetTitle = widgetTitle .. "  (" .. tostring(cfg.LockedTitle or "Locked") .. ")"
-				end
 				local configKey = "Toggle_" .. widgetTitle
 				local value = cfg.Value == true
 				if ConfigData[configKey] ~= nil then value = ConfigData[configKey] == true end
@@ -1404,7 +1523,10 @@ function BananaHub:Window(GuiConfig)
 						ToggleFunc:Set(not ToggleFunc.Value)
 					end)
 				else
-					Toggle.BackgroundTransparency = 0.97
+					-- locked: dim only the switch, keep the title readable, and
+					-- drop the padlock box underneath the row
+					ToggleCircle.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
+					AddLockOverlay(Toggle, Toggle.Size.Y.Offset)
 				end
 
 				ToggleFunc:Set(ToggleFunc.Value, true)
@@ -1415,9 +1537,6 @@ function BananaHub:Window(GuiConfig)
 				cfg = cfg or {}
 				local widgetTitle = tostring(cfg.Title or "Slider")
 				local locked = cfg.Locked == true
-				if locked then
-					widgetTitle = widgetTitle .. "  (" .. tostring(cfg.LockedTitle or "Locked") .. ")"
-				end
 
 				local range = type(cfg.Value) == "table" and cfg.Value or {}
 				local min = tonumber(range.Min) or tonumber(cfg.Min) or 0
@@ -1587,7 +1706,7 @@ function BananaHub:Window(GuiConfig)
 					TextBox.Text = tostring(default)
 					TextBox.TextEditable = false
 					TextBox.Active = false
-					Slider.BackgroundTransparency = 0.97
+					AddLockOverlay(Slider, Slider.Size.Y.Offset)
 				end
 
 				return registerElement(configKey, SliderFunc)
@@ -1597,9 +1716,6 @@ function BananaHub:Window(GuiConfig)
 				cfg = cfg or {}
 				local widgetTitle = tostring(cfg.Title or "Dropdown")
 				local locked = cfg.Locked == true
-				if locked then
-					widgetTitle = widgetTitle .. "  (" .. tostring(cfg.LockedTitle or "Locked") .. ")"
-				end
 
 				local options = cfg.Values or cfg.Options or {}
 				local multi = cfg.Multi == true
@@ -1881,7 +1997,7 @@ function BananaHub:Window(GuiConfig)
 				DropdownFunc.Default = cfg.Value
 
 				if locked then
-					Dropdown.BackgroundTransparency = 0.97
+					AddLockOverlay(Dropdown, Dropdown.Size.Y.Offset)
 				end
 
 				return registerElement(configKey, DropdownFunc)
@@ -1976,9 +2092,6 @@ function BananaHub:Window(GuiConfig)
 				cfg = cfg or {}
 				local widgetTitle = tostring(cfg.Title or "Button")
 				local locked = cfg.Locked == true
-				if locked then
-					widgetTitle = widgetTitle .. "  (" .. tostring(cfg.LockedTitle or "Locked") .. ")"
-				end
 
 				local Button = Instance.new("Frame")
 				local UICorner = Instance.new("UICorner")
@@ -2029,8 +2142,10 @@ function BananaHub:Window(GuiConfig)
 				end)
 
 				if locked then
-					MainButton.BackgroundTransparency = 0.97
 					ButtonLabel.TextColor3 = Color3.fromRGB(140, 140, 140)
+					-- keep the button as the top row, then add the padlock box
+					MainButton.Size = UDim2.new(1, 0, 0, 34)
+					AddLockOverlay(Button, 34)
 				end
 
 				return ButtonFunc
@@ -2210,5 +2325,9 @@ function BananaHub:Notify(cfg)
 end
 
 function BananaHub:SetTheme() end
+
+-- Let the loader confirm which build it got.
+BananaHub.Build = BUILD
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_3"
 
 return BananaHub
