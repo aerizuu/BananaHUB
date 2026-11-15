@@ -13,11 +13,11 @@
     No key system, no roles, no tiers. Everything is local.
 ]]
 
--- BANANAHUB_BUILD_BLACK_9
+-- BANANAHUB_BUILD_BLACK_10
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (the old blue /
 -- see-through build) can never be loaded again.
-local BUILD = "black-9"
+local BUILD = "black-10"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -1117,6 +1117,9 @@ function BananaHub:Window(GuiConfig)
 
 	local function PlayOpen()
 		if not DropShadowHolder then return end
+		-- A list opened before the window was hidden belongs to a row the user
+		-- cannot see; start from a clean state.
+		pcall(function() GuiFunc.CloseDropdowns() end)
 		CancelSizeTween()
 		local target = RestingSize()
 		DropShadowHolder.Visible = true
@@ -1213,6 +1216,27 @@ function BananaHub:Window(GuiConfig)
 	-- { Header = row, List = floating list, Close = fn }.
 	local OpenDropdowns = {}
 
+	-- Every list the library has created, open or not. A list may only be
+	-- visible while it is in OpenDropdowns, which only a click on its own
+	-- header can put it into. This sweep enforces that, so nothing else (a
+	-- config load, a callback, a resize, a programmatic Set) can leave a list
+	-- hanging open over the page.
+	local AllDropdownLists = {}
+	local function SweepDropdowns()
+		for _, list in ipairs(AllDropdownLists) do
+			if list and list.Parent and list.Visible then
+				local registered = false
+				for _, entry in ipairs(OpenDropdowns) do
+					if type(entry) == "table" and entry.List == list then
+						registered = true
+						break
+					end
+				end
+				if not registered then list.Visible = false end
+			end
+		end
+	end
+
 	local function closeAllDropdowns()
 		-- Snapshot first: a list's Close also unregisters itself.
 		local open = OpenDropdowns
@@ -1225,6 +1249,12 @@ function BananaHub:Window(GuiConfig)
 	-- Also reachable as a top-level call, so a script can close lists without
 	-- knowing about GuiFunc.
 	BananaHub.CloseDropdowns = closeAllDropdowns
+
+	-- Run the sweep whenever the window geometry changes: those are the moments
+	-- a list could be left stranded (a resize, a window open/close). It never
+	-- opens anything.
+	DropShadowHolder:GetPropertyChangedSignal("Size"):Connect(SweepDropdowns)
+	DropShadowHolder:GetPropertyChangedSignal("Visible"):Connect(SweepDropdowns)
 
 	-- Floating layer for open dropdown lists. With ZIndexBehavior.Sibling a
 	-- child of Main is always drawn above Main's other children, so a list that
@@ -2093,6 +2123,10 @@ function BananaHub:Window(GuiConfig)
 				OptionList.Name = "OptionList"
 				OptionList.Parent = OverlayLayer
 
+				-- Register with the window so the sweep can force it shut if it
+				-- is ever visible without a click having opened it.
+				AllDropdownLists[#AllDropdownLists + 1] = OptionList
+
 				local OptionListCorner = Instance.new("UICorner")
 				OptionListCorner.CornerRadius = UDim.new(0, 4)
 				OptionListCorner.Parent = OptionList
@@ -2239,7 +2273,15 @@ function BananaHub:Window(GuiConfig)
 					end
 				end
 
-				openList = function()
+				-- `userOpening` is set only by a real click on this row's header.
+				-- Without it a list can never become visible, so nothing that runs
+				-- while the UI is being built (scrolling, Refresh, a config load,
+				-- a callback, a programmatic Set) can pop a list open on its own.
+				local userOpening = false
+
+				-- Reposition an already-open list under its row. Never makes a
+				-- hidden list visible.
+				local function reposition()
 					-- Anchor the floating panel directly under its row, in the
 					-- window overlay's coordinate space, and flip it above the row
 					-- when there is not enough room below.
@@ -2261,9 +2303,29 @@ function BananaHub:Window(GuiConfig)
 
 					OptionList.Position = UDim2.fromOffset(row.X - origin.X + 10, y)
 					OptionList.Size = UDim2.fromOffset(width, height)
+				end
+
+				openList = function()
+					-- Only a click on the header may open a list.
+					if not userOpening then return end
+					reposition()
 					OptionList.CanvasSize = UDim2.new(0, 0, 0, 0)
 					OptionList.Visible = true
 				end
+
+				-- HARD GUARD. The instant this list becomes visible it must
+				-- already be registered as click-opened, or it is hidden again.
+				-- This is what makes "auto open" impossible: registration only
+				-- happens inside the click handler below.
+				OptionList:GetPropertyChangedSignal("Visible"):Connect(function()
+					if not OptionList.Visible then return end
+					for _, entry in ipairs(OpenDropdowns) do
+						if type(entry) == "table" and entry.List == OptionList then
+							return
+						end
+					end
+					OptionList.Visible = false
+				end)
 
 				DropdownButton.Activated:Connect(function()
 					if locked then return end
@@ -2273,17 +2335,22 @@ function BananaHub:Window(GuiConfig)
 					-- below used to include this one, so the toggle re-opened it
 					-- and an open list could never be closed.
 					if OptionList.Visible then
+						userOpening = false
 						closeList()
 						return
 					end
 
 					closeAllDropdowns()
-					openList()
+					-- Register FIRST, then show: the visible-guard above only
+					-- lets the list appear when its entry already exists.
 					OpenDropdowns[#OpenDropdowns + 1] = {
 						Header = Dropdown,
 						List = OptionList,
 						Close = closeList,
 					}
+					userOpening = true
+					openList()
+					userOpening = false
 				end)
 
 				function DropdownFunc:Set(v, silent)
@@ -2339,16 +2406,17 @@ function BananaHub:Window(GuiConfig)
 
 				buildRows()
 
-				-- Scrolling the page moves the row, so re-anchor the floating list;
-				-- if the row leaves the viewport, close it instead of leaving it
-				-- floating over unrelated rows.
+				-- Scrolling the page moves the row, so an OPEN list is re-anchored
+				-- under it; if the row leaves the viewport the list closes. This
+				-- only ever moves or closes a list that is already visible - it
+				-- must never open one, or scrolling would pop every dropdown open.
 				ScrolLayers:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
 					if not OptionList.Visible then return end
 					local rowY = Dropdown.AbsolutePosition.Y - ScrolLayers.AbsolutePosition.Y
 					if rowY < 0 or rowY > ScrolLayers.AbsoluteSize.Y then
 						closeList()
 					else
-						openList()
+						reposition()
 					end
 				end)
 
@@ -2710,6 +2778,6 @@ function BananaHub:SetTheme() end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_9"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_10"
 
 return BananaHub
