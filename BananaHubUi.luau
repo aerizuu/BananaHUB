@@ -13,11 +13,11 @@
     No key system, no roles, no tiers. Everything is local.
 ]]
 
--- BANANAHUB_BUILD_BLACK_10
+-- BANANAHUB_BUILD_BLACK_12
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (the old blue /
 -- see-through build) can never be loaded again.
-local BUILD = "black-10"
+local BUILD = "black-12"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -137,81 +137,207 @@ end
 
 local isMobile = isMobileDevice()
 
+-- Phone and tablet both report TouchEnabled, so `isMobile` is true for a tablet
+-- with a mouse and a Bluetooth keyboard attached too. What actually breaks is
+-- small screens, so gate the compact layout on the viewport instead of on the
+-- input devices: on a large touch screen the desktop layout fits fine.
+local function isCompact()
+	-- Live viewport, not the module snapshot: this is called again after a
+	-- rotation, where the snapshot would still describe the old orientation.
+	local cam = workspace.CurrentCamera
+	local vp = (cam and cam.ViewportSize) or viewport
+	if vp.X <= 700 or vp.Y <= 420 then return true end
+	return isMobile
+end
+
+-- Raw pixel fit, no upper clamp. Used for the window's default size on phones,
+-- where capping at 50% of the screen would leave a needlessly tiny panel.
+local function fitPixels(pxWidth, pxHeight)
+	local scaleX = pxWidth / viewport.X
+	local scaleY = pxHeight / viewport.Y
+	if scaleX > 0.94 then scaleX = 0.94 end
+	if scaleY > 0.92 then scaleY = 0.92 end
+	return UDim2.new(scaleX, 0, scaleY, 0)
+end
+
 local function safeSize(pxWidth, pxHeight)
 	local scaleX = pxWidth / viewport.X
 	local scaleY = pxHeight / viewport.Y
-	if isMobile then
-		if scaleX > 0.5 then scaleX = 0.5 end
-		if scaleY > 0.3 then scaleY = 0.3 end
+	if isCompact() then
+		if scaleX > 0.94 then scaleX = 0.94 end
+		if scaleY > 0.92 then scaleY = 0.92 end
+	else
+		if scaleX > 0.8 then scaleX = 0.8 end
+		if scaleY > 0.85 then scaleY = 0.85 end
 	end
 	return UDim2.new(scaleX, 0, scaleY, 0)
 end
 
+-- ---------------------------------------------------------------
+-- Device detection
+--
+-- TouchEnabled alone cannot tell a phone from a tablet (both report it), and a
+-- tablet with a Bluetooth keyboard reports KeyboardEnabled too. So: classify on
+-- the pointer first, then fall back to screen size, which is what actually
+-- decides whether the compact layout is needed.
+-- ---------------------------------------------------------------
+local function DetectDevice()
+	-- Read the live viewport rather than the module-level snapshot: this runs
+	-- again after a rotation, where the snapshot is stale.
+	local cam = workspace.CurrentCamera
+	local vp = (cam and cam.ViewportSize) or viewport
+	local touch = UserInputService.TouchEnabled
+	local mouse = UserInputService.MouseEnabled
+	local keyboard = UserInputService.KeyboardEnabled
+	local shortest = math.min(vp.X, vp.Y)
+
+	local name, kind
+	if touch and not mouse then
+		-- A finger is the only pointer: phone or tablet, decided by screen size.
+		-- 600px is the usual short-side breakpoint between the two.
+		if shortest >= 600 then
+			name, kind = "Tablet", "tablet"
+		else
+			name, kind = "Mobile", "mobile"
+		end
+	elseif touch and mouse and shortest < 700 then
+		-- Touch plus a pointer on a small screen. Some mobile executors report a
+		-- virtual mouse; a 390px-wide screen is a phone regardless.
+		name, kind = "Mobile", "mobile"
+	else
+		-- Keyboard and pointer: desktop or laptop, possibly with a touchscreen.
+		name, kind = "PC", "pc"
+	end
+
+	return {
+		Name     = name,
+		Kind     = kind,
+		Touch    = touch,
+		Mouse    = mouse,
+		Keyboard = keyboard,
+		Width    = vp.X,
+		Height   = vp.Y,
+		Compact  = isCompact(),
+	}
+end
+
+local DEVICE = DetectDevice()
+
 local function MakeDraggable(topbarobject, object)
+	-- Absolute-position helpers. Working in absolute pixels instead of adding to
+	-- Position.Offset is what makes the window behave the same whether its size
+	-- is scale-based (the default, so it fits any screen) or offset-based (after
+	-- a resize). Reading AbsoluteSize also means the resize maths sees the real
+	-- on-screen size rather than a UDim2 whose offset may be 0.
+	local function ParentSize(gui)
+		local p = gui.Parent
+		if p and p:IsA("GuiObject") then return p.AbsoluteSize end
+		return viewport
+	end
+
+	local function SetAbsoluteTopLeft(gui, ax, ay)
+		local parentSize = ParentSize(gui)
+		if parentSize.X <= 0 or parentSize.Y <= 0 then return end
+		local absSize = gui.AbsoluteSize
+		local anchor = gui.AnchorPoint
+		-- Position is resolved as: parentSize * scale - absSize * anchor
+		local scaleX = (ax + absSize.X * anchor.X) / parentSize.X
+		local scaleY = (ay + absSize.Y * anchor.Y) / parentSize.Y
+		gui.Position = UDim2.new(scaleX, 0, scaleY, 0)
+	end
+
 	local function CustomPos(bar, frame)
-		local Dragging, DragInput, DragStart, StartPosition
+		local Dragging, DragInput, DragStart, StartAbs
 
 		local function UpdatePos(input)
-			local Delta = input.Position - DragStart
-			local pos = UDim2.new(
-				StartPosition.X.Scale,
-				StartPosition.X.Offset + Delta.X,
-				StartPosition.Y.Scale,
-				StartPosition.Y.Offset + Delta.Y
-			)
-			-- remember where the user parked the window so the open/close
-			-- animation reopens it in the same spot
-			frame:SetAttribute("BH_RestingX", pos.X.Offset)
-			frame:SetAttribute("BH_RestingY", pos.Y.Offset)
-			TweenService:Create(frame, TweenInfo.new(0.2), { Position = pos }):Play()
+			if not StartAbs then return end
+			local delta = input.Position - DragStart
+			local absSize = frame.AbsoluteSize
+			local parentSize = ParentSize(frame)
+			local maxX = math.max(parentSize.X - absSize.X, 0)
+			local maxY = math.max(parentSize.Y - absSize.Y, 0)
+			-- Keep a sliver of the window reachable so it can never be dragged
+			-- fully off-screen and stranded (easy to do with a thumb on a phone).
+			local minVisible = math.min(48, absSize.X * 0.5)
+			local x = math.clamp(StartAbs.X + delta.X, -(absSize.X - minVisible), maxX)
+			local y = math.clamp(StartAbs.Y + delta.Y, 0, maxY)
+
+			SetAbsoluteTopLeft(frame, x, y)
+			-- Remember where the user parked the window so the open/close
+			-- animation reopens it in the same spot.
+			frame:SetAttribute("BH_RestingX", frame.Position.X.Scale)
+			frame:SetAttribute("BH_RestingY", frame.Position.Y.Scale)
 		end
 
+		local function Finish()
+			Dragging = false
+			DragInput = nil
+		end
+
+		bar.Active = true
 		bar.InputBegan:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			if input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch then
 				Dragging = true
 				DragStart = input.Position
-				StartPosition = frame.Position
-				input.Changed:Connect(function()
-					if input.UserInputState == Enum.UserInputState.End then
-						Dragging = false
-					end
-				end)
+				StartAbs = frame.AbsolutePosition
 			end
 		end)
 
 		bar.InputChanged:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+			if input.UserInputType == Enum.UserInputType.MouseMovement
+				or input.UserInputType == Enum.UserInputType.Touch then
 				DragInput = input
 			end
 		end)
 
-		UserInputService.InputChanged:Connect(function(input)
-			if input == DragInput and Dragging then
-				UpdatePos(input)
+		-- Release is detected on the bar itself (reliable for mouse AND touch;
+		-- a mouse InputObject never reports UserInputState.End through Changed,
+		-- which is why a release could previously be missed) plus the global
+		-- InputEnded as a safety net for a finger that slides off the bar.
+		bar.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch then
+				Finish()
 			end
+		end)
+		UserInputService.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch then
+				Finish()
+			end
+		end)
+
+		UserInputService.InputChanged:Connect(function(input)
+			if not Dragging then return end
+			if input ~= DragInput then return end
+			UpdatePos(input)
 		end)
 	end
 
 	local function CustomSize(frame)
-		local Dragging, DragInput, DragStart, StartSize
-		local minSizeX, minSizeY = 100, 100
-		local defSizeX, defSizeY = 640, 400
-		if isMobile then
-			defSizeX, defSizeY = 470, 270
-		end
+		local Dragging, DragInput, DragStart, StartAbsSize, StartAbsPos
+		local minSizeX, minSizeY = 260, 200
 
-		frame.Size = UDim2.new(0, defSizeX, 0, defSizeY)
+		-- Default size: on a phone the window should fill most of the screen,
+		-- because a 470x270 panel on a 390x844 viewport is unusable.
+		frame.Size = safeSize(640, 400)
 
 		-- Grab area: sits over the bottom-right corner of the shadow ring and the
 		-- very corner of the panel. The visible lines are drawn inside this box
-		-- but outside the panel itself.
+		-- but outside the panel itself. It is deliberately larger on a touch
+		-- screen: a 34px target is fine for a mouse and near-impossible for a
+		-- fingertip.
+		local gripSize = isCompact() and 52 or 34
+
 		local changesizeobject = Instance.new("Frame")
 		changesizeobject.AnchorPoint = Vector2.new(1, 1)
 		changesizeobject.BackgroundTransparency = 1
-		changesizeobject.Size = UDim2.new(0, 34, 0, 34)
+		changesizeobject.Size = UDim2.new(0, gripSize, 0, gripSize)
 		changesizeobject.Position = UDim2.new(1, 0, 1, 0)
 		changesizeobject.ZIndex = 10
 		changesizeobject.Name = "changesizeobject"
+		changesizeobject.Active = true   -- required to receive InputBegan
 		changesizeobject.Parent = frame
 
 		-- Resize grip: two short 45-degree lines just OUTSIDE the panel's
@@ -219,6 +345,7 @@ local function MakeDraggable(topbarobject, object)
 		-- reads as "drag me bigger" without stealing space inside the UI.
 		-- The panel is inset 23.5px inside the holder, so offsets around 14-21px
 		-- from the holder corner hug the panel's corner from just outside it.
+		local lineLength = isCompact() and 16 or 11
 		local function GripLine(inset, length)
 			local line = Instance.new("Frame")
 			line.Name = "ResizeGripLine"
@@ -238,43 +365,80 @@ local function MakeDraggable(topbarobject, object)
 			return line
 		end
 
-		GripLine(14, 11)
-		GripLine(21, 11)
+		GripLine(14, lineLength)
+		GripLine(21, lineLength)
 
 		local function UpdateSize(input)
-			local Delta = input.Position - DragStart
-			local newWidth = math.max(StartSize.X.Offset + Delta.X, minSizeX)
-			local newHeight = math.max(StartSize.Y.Offset + Delta.Y, minSizeY)
-			-- remember the user's size so the open/close animation zooms back
-			-- to it instead of the size the script originally requested
-			frame:SetAttribute("BH_RestingW", newWidth)
-			frame:SetAttribute("BH_RestingH", newHeight)
-			TweenService:Create(frame, TweenInfo.new(0.2), { Size = UDim2.new(0, newWidth, 0, newHeight) }):Play()
+			if not StartAbsSize then return end
+			local delta = input.Position - DragStart
+			local parentSize = ParentSize(frame)
+
+			-- Resize in absolute pixels and clamp to the screen, so the window
+			-- can neither collapse to nothing nor grow past the viewport where
+			-- its own grip would end up off-screen and unreachable.
+			local maxW = math.max(parentSize.X * 0.98, minSizeX)
+			local maxH = math.max(parentSize.Y * 0.98, minSizeY)
+			local newW = math.clamp(StartAbsSize.X + delta.X, math.min(minSizeX, maxW), maxW)
+			local newH = math.clamp(StartAbsSize.Y + delta.Y, math.min(minSizeY, maxH), maxH)
+
+			frame.Size = UDim2.new(0, math.floor(newW), 0, math.floor(newH))
+
+			-- Growing right/down must not push the window off the screen, and
+			-- because the holder is anchored at its centre its top-left drifts
+			-- as it grows. Re-anchor to the corner the user started from.
+			local ax = StartAbsPos.X
+			local ay = StartAbsPos.Y
+			ax = math.clamp(ax, 0, math.max(parentSize.X - newW, 0))
+			ay = math.clamp(ay, 0, math.max(parentSize.Y - newH, 0))
+			SetAbsoluteTopLeft(frame, ax, ay)
+
+			-- Remember the user's size so the open/close animation zooms back
+			-- to it instead of the size the script originally requested.
+			frame:SetAttribute("BH_RestingW", math.floor(newW))
+			frame:SetAttribute("BH_RestingH", math.floor(newH))
+			frame:SetAttribute("BH_RestingX", frame.Position.X.Scale)
+			frame:SetAttribute("BH_RestingY", frame.Position.Y.Scale)
+		end
+
+		local function Finish()
+			Dragging = false
+			DragInput = nil
 		end
 
 		changesizeobject.InputBegan:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			if input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch then
 				Dragging = true
 				DragStart = input.Position
-				StartSize = frame.Size
-				input.Changed:Connect(function()
-					if input.UserInputState == Enum.UserInputState.End then
-						Dragging = false
-					end
-				end)
+				StartAbsSize = frame.AbsoluteSize
+				StartAbsPos = frame.AbsolutePosition
 			end
 		end)
 
 		changesizeobject.InputChanged:Connect(function(input)
-			if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+			if input.UserInputType == Enum.UserInputType.MouseMovement
+				or input.UserInputType == Enum.UserInputType.Touch then
 				DragInput = input
 			end
 		end)
 
-		UserInputService.InputChanged:Connect(function(input)
-			if input == DragInput and Dragging then
-				UpdateSize(input)
+		changesizeobject.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch then
+				Finish()
 			end
+		end)
+		UserInputService.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch then
+				Finish()
+			end
+		end)
+
+		UserInputService.InputChanged:Connect(function(input)
+			if not Dragging then return end
+			if input ~= DragInput then return end
+			UpdateSize(input)
 		end)
 	end
 
@@ -317,6 +481,8 @@ end
 local BananaHub = {}
 BananaHub.Icons = Icons
 BananaHub.ConfigFolder = CONFIG_FOLDER
+BananaHub.Device = DEVICE
+BananaHub.DetectDevice = DetectDevice
 
 -- =====================================================================
 -- Notifications
@@ -544,6 +710,57 @@ function BananaHub:Window(GuiConfig)
 	-- feature". Everything is drawn from frames + gradients, so it needs no
 	-- asset ids and scales cleanly at any size.
 	local LOCK_TEXT = "Buy Premium to unlock this feature"
+
+	-- ---------------------------------------------------------------
+	-- Device glyphs
+	--
+	-- Drawn from frames rather than asset ids, like the padlock above, so they
+	-- cannot come out blank if an image id is wrong or unmoderated. Each glyph
+	-- is a simple silhouette: a monitor with a stand, a phone, or a tablet.
+	-- `parent` is any GuiObject; the glyph fills it.
+	-- ---------------------------------------------------------------
+	local function MakeDeviceGlyph(parent, kind, colour, zIndex)
+		colour = colour or Color3.fromRGB(215, 215, 215)
+
+		local Root = Instance.new("Frame")
+		Root.Name = "DeviceGlyph"
+		Root.BackgroundTransparency = 1
+		Root.Size = UDim2.new(1, 0, 1, 0)
+		Root.ZIndex = zIndex or 4
+		Root.Parent = parent
+
+		local function bar(x, y, w, h, radius)
+			local f = Instance.new("Frame")
+			f.BackgroundColor3 = colour
+			f.BorderSizePixel = 0
+			f.AnchorPoint = Vector2.new(0.5, 0.5)
+			f.Position = UDim2.new(x, 0, y, 0)
+			f.Size = UDim2.new(w, 0, h, 0)
+			f.ZIndex = (zIndex or 4) + 1
+			f.Parent = Root
+			local c = Instance.new("UICorner")
+			c.CornerRadius = UDim.new(0, radius or 1)
+			c.Parent = f
+			return f
+		end
+
+		-- Each glyph is a filled silhouette. At 12px an outline would just blur
+		-- into a smudge, so shape carries the meaning: a monitor is wide and
+		-- low with a stand, a tablet is a wide tall slab, a phone is a narrow
+		-- tall slab with a home indicator.
+		if kind == "pc" then
+			bar(0.5, 0.38, 0.86, 0.52, 1)      -- monitor
+			bar(0.5, 0.70, 0.10, 0.14, 0)      -- stand
+			bar(0.5, 0.84, 0.38, 0.09, 1)      -- base
+		elseif kind == "tablet" then
+			bar(0.5, 0.50, 0.66, 0.90, 2)      -- body
+		else
+			bar(0.5, 0.46, 0.42, 0.78, 2)      -- body
+			bar(0.5, 0.90, 0.16, 0.06, 1)      -- home indicator
+		end
+
+		return Root
+	end
 
 	-- Premium accent used by the lock art (warm gold reads as "paid" against
 	-- the black panel and cannot be confused with the white UI accent).
@@ -791,7 +1008,9 @@ function BananaHub:Window(GuiConfig)
 	DropShadowHolder.BorderSizePixel = 0
 	DropShadowHolder.AnchorPoint = Vector2.new(0.5, 0.5)
 	DropShadowHolder.Position = UDim2.new(0.5, 0, 0.5, 0)
-	DropShadowHolder.Size = isMobile and safeSize(470, 270) or safeSize(640, 400)
+	-- Placeholder size; MakeDraggable and the GuiConfig.Size block below set the
+	-- real one. safeSize keeps it inside the viewport on every screen.
+	DropShadowHolder.Size = safeSize(640, 400)
 	DropShadowHolder.ZIndex = 0
 	DropShadowHolder.Name = "DropShadowHolder"
 	DropShadowHolder.Parent = BananaHubGui
@@ -898,8 +1117,10 @@ function BananaHub:Window(GuiConfig)
 	TextLabel.TextColor3 = GuiConfig.Color
 	TextLabel.TextSize = 14
 	TextLabel.TextXAlignment = Enum.TextXAlignment.Left
+	TextLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	TextLabel.BackgroundTransparency = 0.999
-	TextLabel.Size = UDim2.new(1, -135, 1, 0)
+	-- Title keeps clear of the footer text and the device badge to its right.
+	TextLabel.Size = UDim2.new(1, -300, 1, 0)
 	TextLabel.Position = UDim2.new(0, 35, 0, 0)
 	TextLabel.Parent = Top
 
@@ -909,9 +1130,97 @@ function BananaHub:Window(GuiConfig)
 	TextLabel1.TextSize = 14
 	TextLabel1.BackgroundTransparency = 0.999
 	TextLabel1.TextXAlignment = Enum.TextXAlignment.Right
-	TextLabel1.Size = UDim2.new(0, 240, 1, 0)
-	TextLabel1.Position = UDim2.new(1, -310, 0, 0)
+	TextLabel1.TextTruncate = Enum.TextTruncate.AtEnd
+	-- Sits between the title and the badge. 150px is enough for "Soreya | V 1.0"
+	-- and stops it running under the badge on a narrow window.
+	TextLabel1.Size = UDim2.new(0, 150, 1, 0)
+	TextLabel1.Position = UDim2.new(1, -300, 0, 0)
 	TextLabel1.Parent = Top
+
+	-- ---------------------------------------------------------------
+	-- Device badge
+	--
+	-- A small pill in the title bar showing which device this session is running
+	-- on (PC / Mobile / Tablet) with a matching icon. Purely informational: the
+	-- compact layout is chosen by isCompact(), not by this.
+	--
+	-- Layout budget in the title bar, from the right edge: Close occupies
+	-- -33..-8, Min -63..-38. The badge ends at -70 so it cannot overlap either.
+	-- ---------------------------------------------------------------
+	local DeviceBadge = Instance.new("Frame")
+	DeviceBadge.Name = "DeviceBadge"
+	DeviceBadge.AnchorPoint = Vector2.new(1, 0.5)
+	DeviceBadge.Position = UDim2.new(1, -70, 0.5, 0)
+	-- Sized from the label length: "Mobile"/"Tablet" are the longest at 6 chars
+	-- plus the 12px icon and padding, so the pill never clips its own text.
+	DeviceBadge.Size = UDim2.new(0, 26 + (#DEVICE.Name * 6), 0, 20)
+	DeviceBadge.BackgroundColor3 = SURFACE_SOFT
+	DeviceBadge.BackgroundTransparency = 0.25
+	DeviceBadge.BorderSizePixel = 0
+	DeviceBadge.ZIndex = 3
+	DeviceBadge.Parent = Top
+
+	local DeviceBadgeCorner = Instance.new("UICorner")
+	DeviceBadgeCorner.CornerRadius = UDim.new(1, 0)
+	DeviceBadgeCorner.Parent = DeviceBadge
+
+	local DeviceBadgeStroke = Instance.new("UIStroke")
+	DeviceBadgeStroke.Color = GuiConfig.Color
+	DeviceBadgeStroke.Thickness = 1
+	DeviceBadgeStroke.Transparency = 0.82
+	DeviceBadgeStroke.Parent = DeviceBadge
+
+	-- Glyph is drawn from frames (see MakeDeviceGlyph), so it can never come out
+	-- as a blank image if an asset id is wrong.
+	local DeviceIcon = Instance.new("Frame")
+	DeviceIcon.Name = "DeviceIcon"
+	DeviceIcon.AnchorPoint = Vector2.new(0, 0.5)
+	DeviceIcon.Position = UDim2.new(0, 6, 0.5, 0)
+	DeviceIcon.Size = UDim2.new(0, 12, 0, 12)
+	DeviceIcon.BackgroundTransparency = 1
+	DeviceIcon.ZIndex = 4
+	DeviceIcon.Parent = DeviceBadge
+	MakeDeviceGlyph(DeviceIcon, DEVICE.Kind, Color3.fromRGB(215, 215, 215), 4)
+
+	local DeviceText = Instance.new("TextLabel")
+	DeviceText.Name = "DeviceText"
+	DeviceText.Font = Enum.Font.GothamBold
+	DeviceText.Text = DEVICE.Name
+	DeviceText.TextColor3 = Color3.fromRGB(215, 215, 215)
+	DeviceText.TextSize = 10
+	DeviceText.TextXAlignment = Enum.TextXAlignment.Left
+	DeviceText.BackgroundTransparency = 1
+	DeviceText.Position = UDim2.new(0, 21, 0, 0)
+	DeviceText.Size = UDim2.new(1, -25, 1, 0)
+	DeviceText.ZIndex = 4
+	DeviceText.Parent = DeviceBadge
+
+	-- The long "Game | V x.y" line does not fit beside the badge on a phone, so
+	-- hide it there rather than letting it run under the close button. The title
+	-- then takes over that space: with the footer gone the badge is the only
+	-- thing to its right, so stop at -165 instead of -300.
+	if isCompact() then
+		TextLabel1.Visible = false
+		DeviceBadge.Size = UDim2.new(0, 24 + (#DEVICE.Name * 6), 0, 18)
+		TextLabel.Size = UDim2.new(1, -165, 1, 0)
+	end
+
+	-- The window is resizable down to 260px, where the footer text and the badge
+	-- cannot both fit. Drop the footer first (it is decorative) and only then
+	-- let the title run under the badge's left edge.
+	local function LayoutTitleBar()
+		local w = DropShadowHolder.AbsoluteSize.X
+		if w <= 0 then return end
+		if w < 420 then
+			TextLabel1.Visible = false
+			TextLabel.Size = UDim2.new(1, -165, 1, 0)
+		elseif not isCompact() then
+			TextLabel1.Visible = true
+			TextLabel.Size = UDim2.new(1, -300, 1, 0)
+		end
+	end
+	DropShadowHolder:GetPropertyChangedSignal("AbsoluteSize"):Connect(LayoutTitleBar)
+	task.defer(LayoutTitleBar)
 
 	Close.Font = Enum.Font.SourceSans
 	Close.Text = ""
@@ -945,6 +1254,15 @@ function BananaHub:Window(GuiConfig)
 	ImageLabel2.Position = UDim2.new(0.5, 0, 0.5, 0)
 	ImageLabel2.Size = UDim2.new(1, -9, 1, -9)
 	ImageLabel2.Parent = Min
+
+	-- Sidebar width. 120px is a desktop-sized rail; on a phone the same width
+	-- eats a third of a 390px screen, so use a narrower rail and a smaller tab
+	-- row. The numbers stay in GuiConfig["Tab Width"] so the content pane's
+	-- offsets below still line up.
+	if isCompact() then
+		local w = math.clamp(math.floor(viewport.X * 0.22), 76, 96)
+		GuiConfig["Tab Width"] = w
+	end
 
 	LayersTab.BackgroundTransparency = 0.999
 	LayersTab.Position = UDim2.new(0, 9, 0, 50)
@@ -1040,18 +1358,44 @@ function BananaHub:Window(GuiConfig)
 	PlayerName.TextSize = 11
 	PlayerName.TextXAlignment = Enum.TextXAlignment.Left
 	PlayerName.BackgroundTransparency = 1
-	PlayerName.Position = UDim2.new(0, 38, 0, 0)
-	PlayerName.Size = UDim2.new(1, -38, 1, 0)
+	PlayerName.Position = UDim2.new(0, 38, 0, -2)
+	PlayerName.Size = UDim2.new(1, -38, 0, 16)
 	PlayerName.TextTruncate = Enum.TextTruncate.AtEnd
 	PlayerName.Parent = PlayerFooter
+
+	-- Device + resolution line under the name. The resolution matters when
+	-- reporting a layout problem: "Mobile 390x844" says far more than "Mobile".
+	-- The sidebar is only ~58px wide on a phone, where even the player name
+	-- truncates, so this line is desktop-only; the title-bar badge and the Info
+	-- tab's Device Info section cover the compact layout.
+	local DeviceLine = Instance.new("TextLabel")
+	DeviceLine.Name = "DeviceLine"
+	DeviceLine.Font = Enum.Font.Gotham
+	DeviceLine.Text = string.format("%s  %dx%d", DEVICE.Name, math.floor(DEVICE.Width), math.floor(DEVICE.Height))
+	DeviceLine.TextColor3 = Color3.fromRGB(120, 120, 120)
+	DeviceLine.TextSize = 9
+	DeviceLine.TextXAlignment = Enum.TextXAlignment.Left
+	DeviceLine.BackgroundTransparency = 1
+	DeviceLine.Position = UDim2.new(0, 38, 0, 14)
+	DeviceLine.Size = UDim2.new(1, -38, 0, 12)
+	DeviceLine.TextTruncate = Enum.TextTruncate.AtEnd
+	DeviceLine.Parent = PlayerFooter
+	DeviceLine.Visible = not isCompact()
 
 	local ScrollTab = Instance.new("ScrollingFrame")
 	local UIListLayout = Instance.new("UIListLayout")
 
-	ScrollTab.CanvasSize = UDim2.new(0, 0, 1.1, 0)
-	ScrollTab.ScrollBarImageColor3 = Color3.fromRGB(0, 0, 0)
-	ScrollTab.ScrollBarThickness = 0
+	-- Scrollable on every platform. AutomaticCanvasSize lets the layout drive
+	-- the canvas, which is what makes touch panning reliable: a hand-maintained
+	-- CanvasSize that is even 1px short leaves the frame with nothing to scroll.
+	ScrollTab.CanvasSize = UDim2.new(0, 0, 0, 0)
+	ScrollTab.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	ScrollTab.ScrollingDirection = Enum.ScrollingDirection.Y
+	ScrollTab.ElasticBehavior = Enum.ElasticBehavior.WhenScrollable
+	ScrollTab.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 80)
+	ScrollTab.ScrollBarThickness = isCompact() and 3 or 2
 	ScrollTab.Active = true
+	ScrollTab.ClipsDescendants = true
 	ScrollTab.BackgroundTransparency = 0.999
 	ScrollTab.Size = UDim2.new(1, 0, 1, -50)
 	ScrollTab.Name = "ScrollTab"
@@ -1061,14 +1405,10 @@ function BananaHub:Window(GuiConfig)
 	UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	UIListLayout.Parent = ScrollTab
 
+	-- AutomaticCanvasSize handles the height; this only keeps the canvas width
+	-- pinned to the frame so rows cannot scroll sideways.
 	local function UpdateSize1()
-		local OffsetY = 0
-		for _, child in ipairs(ScrollTab:GetChildren()) do
-			if child.Name ~= "UIListLayout" then
-				OffsetY = OffsetY + 3 + child.Size.Y.Offset
-			end
-		end
-		ScrollTab.CanvasSize = UDim2.new(0, 0, 0, OffsetY)
+		ScrollTab.CanvasSize = UDim2.new(0, 0, 0, 0)
 	end
 	ScrollTab.ChildAdded:Connect(UpdateSize1)
 	ScrollTab.ChildRemoved:Connect(UpdateSize1)
@@ -1105,14 +1445,26 @@ function BananaHub:Window(GuiConfig)
 	end
 
 	-- The spot the user dragged the window to (falls back to dead centre).
+	-- BH_RestingX/Y are stored as Position *scales* (see MakeDraggable), so they
+	-- survive a viewport change instead of pinning the window to stale pixels.
 	local function RestingPos()
 		if not DropShadowHolder then return BASE_POS end
 		local x = DropShadowHolder:GetAttribute("BH_RestingX")
 		local y = DropShadowHolder:GetAttribute("BH_RestingY")
 		if typeof(x) == "number" and typeof(y) == "number" then
-			return UDim2.new(0.5, x, 0.5, y)
+			return UDim2.new(x, 0, y, 0)
 		end
 		return BASE_POS
+	end
+
+	-- Shrink a UDim2 size by a factor, keeping BOTH the scale and the offset
+	-- part proportional. The default window size is scale-based (so it fits any
+	-- screen) while a user-resized window is offset-based; tweening only the
+	-- offset would collapse a scale-based window to zero.
+	local function ShrunkSize(target, factor)
+		return UDim2.new(
+			target.X.Scale * factor, math.floor(target.X.Offset * factor),
+			target.Y.Scale * factor, math.floor(target.Y.Offset * factor))
 	end
 
 	local function PlayOpen()
@@ -1125,9 +1477,7 @@ function BananaHub:Window(GuiConfig)
 		DropShadowHolder.Visible = true
 		DropShadowHolder.AnchorPoint = Vector2.new(0.5, 0.5)
 		DropShadowHolder.Position = RestingPos()
-		DropShadowHolder.Size = UDim2.new(
-			0, math.floor(target.X.Offset * 0.9),
-			0, math.floor(target.Y.Offset * 0.9))
+		DropShadowHolder.Size = ShrunkSize(target, 0.9)
 		SizeTween = TweenService:Create(
 			DropShadowHolder,
 			TweenInfo.new(0.26, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
@@ -1145,9 +1495,7 @@ function BananaHub:Window(GuiConfig)
 		SizeTween = TweenService:Create(
 			DropShadowHolder,
 			TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
-			{ Size = UDim2.new(
-				0, math.floor(target.X.Offset * 0.9),
-				0, math.floor(target.Y.Offset * 0.9)) })
+			{ Size = ShrunkSize(target, 0.9) })
 		SizeTween:Play()
 		local thisTween = SizeTween
 		SizeTween.Completed:Connect(function()
@@ -1196,13 +1544,83 @@ function BananaHub:Window(GuiConfig)
 
 	MakeDraggable(Top, DropShadowHolder)
 
-	-- MakeDraggable installs the resize handle and a default 640x400. Honour
-	-- the size the script asked for when it passed one.
+	-- Honour the size the script asked for, but never let it exceed the screen.
+	-- The Soreya scripts pass Size = UDim2.fromOffset(600, 480); applying that
+	-- verbatim on a 390x844 phone produced a window wider than the display,
+	-- which is why the panel could not be resized or scrolled on mobile. A
+	-- UDim2 that is already scale-based is left alone.
 	local requested = GuiConfig.Size
-	if typeof(requested) == "UDim2" and (requested.X.Offset > 0 or requested.Y.Offset > 0) then
-		DropShadowHolder.Size = UDim2.new(0, math.max(requested.X.Offset, 420), 0, math.max(requested.Y.Offset, 300))
+	if typeof(requested) == "UDim2" then
+		local wantW = requested.X.Offset
+		local wantH = requested.Y.Offset
+		if wantW > 0 or wantH > 0 then
+			if wantW <= 0 then wantW = 600 end
+			if wantH <= 0 then wantH = 480 end
+			-- Only shrink to fit; a small screen gets a full-screen-ish panel.
+			wantW = math.min(wantW, viewport.X * 0.94)
+			wantH = math.min(wantH, viewport.Y * 0.92)
+			-- Keep the requested size from collapsing below something usable.
+			wantW = math.max(wantW, math.min(300, viewport.X * 0.9))
+			wantH = math.max(wantH, math.min(220, viewport.Y * 0.9))
+			DropShadowHolder.Size = UDim2.new(0, math.floor(wantW), 0, math.floor(wantH))
+		end
 	end
 	BASE_SIZE = DropShadowHolder.Size
+
+	-- Keep the window on screen when the viewport changes (phone rotation, a
+	-- window resize, a device with a different resolution). Without this a panel
+	-- sized for portrait can end up wider than the screen in landscape, with its
+	-- resize grip off the edge and unreachable.
+	do
+		local camera = workspace.CurrentCamera
+		if camera then
+			camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+				local vp = camera.ViewportSize
+				if vp.X <= 0 or vp.Y <= 0 then return end
+				local absW = DropShadowHolder.AbsoluteSize.X
+				local absH = DropShadowHolder.AbsoluteSize.Y
+				local maxW = vp.X * 0.98
+				local maxH = vp.Y * 0.98
+				if absW > maxW or absH > maxH then
+					local newW = math.min(absW, maxW)
+					local newH = math.min(absH, maxH)
+					DropShadowHolder.Size = UDim2.new(0, math.floor(newW), 0, math.floor(newH))
+					-- Re-centre: the old position may now be off-screen.
+					DropShadowHolder.Position = UDim2.new(0.5, 0, 0.5, 0)
+					DropShadowHolder:SetAttribute("BH_RestingW", math.floor(newW))
+					DropShadowHolder:SetAttribute("BH_RestingH", math.floor(newH))
+					DropShadowHolder:SetAttribute("BH_RestingX", 0.5)
+					DropShadowHolder:SetAttribute("BH_RestingY", 0.5)
+					BASE_SIZE = DropShadowHolder.Size
+				end
+
+				-- Rotation changes the resolution the badge reports, so refresh
+				-- the readout and re-classify (a 844x390 landscape phone is still
+				-- a phone, but the numbers shown should match the screen).
+				local recheck = DetectDevice()
+				DEVICE.Width  = recheck.Width
+				DEVICE.Height = recheck.Height
+				DEVICE.Kind   = recheck.Kind
+				DEVICE.Name   = recheck.Name
+				DEVICE.Compact = recheck.Compact
+				pcall(function()
+					DeviceText.Text = recheck.Name
+					-- The pill is sized from the label length, so a rename
+					-- (Mobile <-> Tablet) has to re-measure it too.
+					DeviceBadge.Size = UDim2.new(0, (isCompact() and 24 or 26) + (#recheck.Name * 6), 0, isCompact() and 18 or 20)
+					-- Redraw the glyph: the device class can change (a small
+					-- tablet reclassified as a phone), and the old frame tree
+					-- must go or the two glyphs would overlap.
+					local oldGlyph = DeviceIcon:FindFirstChild("DeviceGlyph")
+					if oldGlyph then oldGlyph:Destroy() end
+					MakeDeviceGlyph(DeviceIcon, recheck.Kind, Color3.fromRGB(215, 215, 215), 4)
+					DeviceLine.Text = string.format(
+						"%s  %dx%d", recheck.Name, math.floor(recheck.Width), math.floor(recheck.Height))
+				end)
+			end)
+		end
+	end
+
 	-- Animate in on first launch too, so the window never pops into place.
 	task.defer(PlayOpen)
 
@@ -1211,6 +1629,8 @@ function BananaHub:Window(GuiConfig)
 	GuiFunc.__pageLayout = LayersPageLayout
 	GuiFunc.__window = GuiConfig
 	GuiFunc.__main = Main
+	GuiFunc.__device = DEVICE
+	GuiFunc.__deviceBadge = DeviceBadge
 
 	-- Only one dropdown list stays open at a time. Each entry is
 	-- { Header = row, List = floating list, Close = fn }.
@@ -1380,8 +1800,13 @@ function BananaHub:Window(GuiConfig)
 		local UIListLayout1 = Instance.new("UIListLayout")
 
 		ScrolLayers.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 80)
-		ScrolLayers.ScrollBarThickness = 0
+		ScrolLayers.ScrollBarThickness = isCompact() and 3 or 2
+		ScrolLayers.ScrollingDirection = Enum.ScrollingDirection.Y
+		ScrolLayers.ElasticBehavior = Enum.ElasticBehavior.WhenScrollable
+		ScrolLayers.AutomaticCanvasSize = Enum.AutomaticSize.Y
+		ScrolLayers.CanvasSize = UDim2.new(0, 0, 0, 0)
 		ScrolLayers.Active = true
+		ScrolLayers.ClipsDescendants = true
 		ScrolLayers.LayoutOrder = CountTab
 		ScrolLayers.BackgroundTransparency = 0.999
 		ScrolLayers.BorderSizePixel = 0
@@ -1635,13 +2060,11 @@ function BananaHub:Window(GuiConfig)
 			local ANIM_DIR = Enum.EasingDirection.Out
 
 			local function UpdateSizeScroll()
-				local OffsetY = 0
-				for _, child in ipairs(ScrolLayers:GetChildren()) do
-					if child.Name ~= "UIListLayout" then
-						OffsetY = OffsetY + 3 + child.Size.Y.Offset
-					end
-				end
-				ScrolLayers.CanvasSize = UDim2.new(0, 0, 0, OffsetY)
+				-- Canvas height is driven by AutomaticCanvasSize (see where
+				-- ScrolLayers is created). Clearing the canvas size keeps the
+				-- automatic behaviour in charge; a hand-computed total used to
+				-- go stale and left the page unable to scroll.
+				ScrolLayers.CanvasSize = UDim2.new(0, 0, 0, 0)
 			end
 
 			local function UpdateSizeSection()
@@ -2218,6 +2641,9 @@ function BananaHub:Window(GuiConfig)
 						local label = tostring(option)
 						local value = option
 
+						-- Touch needs a taller target than a mouse. 26px rows are
+						-- comfortable with a cursor and fiddly with a fingertip.
+						local optionRowH = isCompact() and 38 or 26
 						local rowFrame = Instance.new("Frame")
 						local rowButton = Instance.new("TextButton")
 						local rowLabel = Instance.new("TextLabel")
@@ -2225,7 +2651,7 @@ function BananaHub:Window(GuiConfig)
 						rowFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 						rowFrame.BackgroundTransparency = 0.999
 						rowFrame.BorderSizePixel = 0
-						rowFrame.Size = UDim2.new(1, 0, 0, 26)
+						rowFrame.Size = UDim2.new(1, 0, 0, optionRowH)
 						rowFrame.LayoutOrder = i
 						rowFrame.ZIndex = 502
 						rowFrame.Name = "Option"
@@ -2276,7 +2702,7 @@ function BananaHub:Window(GuiConfig)
 						rows[#rows + 1] = {frame = rowFrame, label = rowLabel, value = value}
 					end
 
-					expandedHeight = math.min(#DropdownFunc.Options, 9) * 28 + 8
+					expandedHeight = math.min(#DropdownFunc.Options, isCompact() and 6 or 9) * (isCompact() and 38 or 26) + 8
 					refreshVisuals()
 				end
 
@@ -2312,7 +2738,11 @@ function BananaHub:Window(GuiConfig)
 					local row = Dropdown.AbsolutePosition
 					local origin = OverlayLayer.AbsolutePosition
 					local rowH = Dropdown.AbsoluteSize.Y
-					local width = math.max(Dropdown.AbsoluteSize.X - 20, 120)
+					-- Never wider than the panel: on a narrow phone a long option
+					-- label would otherwise push the list off the right edge.
+					local width = math.clamp(
+						Dropdown.AbsoluteSize.X - 20, 120,
+						math.max(OverlayLayer.AbsoluteSize.X - 24, 120))
 					local height = math.min(expandedHeight, OverlayLayer.AbsoluteSize.Y - 16)
 
 					local y = row.Y - origin.Y + rowH + 4
@@ -2802,6 +3232,6 @@ function BananaHub:SetTheme() end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_10"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_12"
 
 return BananaHub
