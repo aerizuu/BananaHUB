@@ -13,11 +13,11 @@
     No key system, no roles, no tiers. Everything is local.
 ]]
 
--- BANANAHUB_BUILD_BLACK_7
+-- BANANAHUB_BUILD_BLACK_8
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (the old blue /
 -- see-through build) can never be loaded again.
-local BUILD = "black-7"
+local BUILD = "black-8"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -1134,6 +1134,9 @@ function BananaHub:Window(GuiConfig)
 
 	local function PlayClose()
 		if not DropShadowHolder then return end
+		-- A floating list belongs to a row inside the window; it must not be
+		-- left hanging on screen while the window is shut.
+		pcall(function() GuiFunc.CloseDropdowns() end)
 		CancelSizeTween()
 		local target = RestingSize()
 		SizeTween = TweenService:Create(
@@ -1802,6 +1805,9 @@ function BananaHub:Window(GuiConfig)
 					RenderLockedRow(Toggle, ToggleTitle, widgetTitle, SectionAdd)
 				else
 					ToggleButton.Activated:Connect(function()
+						-- Flipping a feature is an execution too; drop any open
+						-- list so it cannot sit over the row that just changed.
+						pcall(closeAllDropdowns)
 						ToggleFunc:Set(not ToggleFunc.Value)
 					end)
 				end
@@ -1950,6 +1956,8 @@ function BananaHub:Window(GuiConfig)
 				SliderFrame.InputBegan:Connect(function(input)
 					if locked then return end
 					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+						-- Dragging is an execution; no open list should hover over it.
+						pcall(closeAllDropdowns)
 						Dragging = true
 						setFromX(input.Position.X)
 					end
@@ -2194,8 +2202,12 @@ function BananaHub:Window(GuiConfig)
 									list[#list + 1] = value
 								end
 								DropdownFunc:Set(list)
+								-- Multi stays open: picking several rarities in a
+								-- row is the whole point of the mode.
 							else
 								DropdownFunc:Set(value)
+								-- A single pick is a finished choice, so the list
+								-- closes instead of hovering over the page.
 								closeList()
 							end
 						end)
@@ -2428,6 +2440,12 @@ function BananaHub:Window(GuiConfig)
 					InputFunc:Set(InputTextBox.Text)
 				end)
 
+				-- Typing is an execution; an open list would sit on top of the
+				-- box being typed into.
+				InputTextBox.Focused:Connect(function()
+					pcall(closeAllDropdowns)
+				end)
+
 				ConfigData[configKey] = initial
 				-- The Soreya webhook code reaches into the widget to find its
 				-- TextBox (live URL sync). Expose the row frame like WindUI does.
@@ -2482,6 +2500,10 @@ function BananaHub:Window(GuiConfig)
 
 				MainButton.Activated:Connect(function()
 					CircleClick(MainButton, Mouse.X, Mouse.Y)
+					-- Running an action closes any floating dropdown list. It is
+					-- anchored to its own row, so leaving it up over the page
+					-- while a feature executes is just clutter.
+					pcall(closeAllDropdowns)
 					if locked then return end
 					if type(cfg.Callback) == "function" then
 						pcall(cfg.Callback)
@@ -2672,6 +2694,6 @@ function BananaHub:SetTheme() end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_7"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_8"
 
 return BananaHub
