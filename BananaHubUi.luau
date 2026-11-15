@@ -1861,6 +1861,26 @@ function BananaHub:Window(GuiConfig)
 				local step = tonumber(cfg.Step) or tonumber(cfg.Increment) or 1
 				if max <= min then max = min + 1 end
 
+				-- Show the number at the precision the step implies, then trim the
+				-- padding, so a 0.7 reads as "0.7" (not "0.70000000000000" and not
+				-- "0.70"). Steps like 0.05 keep both decimals.
+				local function stepDecimals(s)
+					if type(s) ~= "number" or s <= 0 then return 3 end
+					for d = 0, 6 do
+						local scaled = s * (10 ^ d)
+						if math.abs(scaled - math.floor(scaled + 0.5)) < 1e-6 then return d end
+					end
+					return 3
+				end
+				local DEC = math.clamp(stepDecimals(step), 0, 4)
+				local function fmt(n)
+					local text = string.format("%." .. DEC .. "f", tonumber(n) or 0)
+					if text:find("%.") then
+						text = text:gsub("0+$", ""):gsub("%.$", "")
+					end
+					return text
+				end
+
 				local configKey = "Slider_" .. widgetTitle
 				if tonumber(ConfigData[configKey]) then default = tonumber(ConfigData[configKey]) end
 
@@ -1903,8 +1923,8 @@ function BananaHub:Window(GuiConfig)
 
 				SliderInput.AnchorPoint = Vector2.new(0, 0.5)
 				SliderInput.BackgroundTransparency = 1
-				SliderInput.Position = UDim2.new(1, -158, 0.5, 0)
-				SliderInput.Size = UDim2.new(0, 34, 0, 20)
+				SliderInput.Position = UDim2.new(1, -176, 0.5, 0)
+				SliderInput.Size = UDim2.new(0, 52, 0, 20)
 				SliderInput.Name = "SliderInput"
 				SliderInput.Parent = Slider
 
@@ -1912,9 +1932,10 @@ function BananaHub:Window(GuiConfig)
 				UICorner16.Parent = SliderInput
 
 				TextBox.Font = Enum.Font.GothamBold
-				TextBox.Text = tostring(default)
+				TextBox.Text = fmt(default)
 				TextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 				TextBox.TextSize = 12
+				TextBox.TextXAlignment = Enum.TextXAlignment.Center
 				TextBox.BackgroundTransparency = 1
 				TextBox.BorderSizePixel = 0
 				TextBox.Size = UDim2.new(1, 0, 1, 0)
@@ -1957,13 +1978,16 @@ function BananaHub:Window(GuiConfig)
 				local function Round(Number, Factor)
 					if Factor <= 0 then return Number end
 					local Result = math.floor(Number / Factor + (Number >= 0 and 0.5 or -0.5)) * Factor
-					return Result
+					-- Snap away the float drift the multiply/divide leaves behind:
+					-- 7 * 0.1 is 0.7000000000000001, and that value would both
+					-- print badly and be handed to the feature callback.
+					return tonumber(string.format("%.6f", Result)) or Result
 				end
 
 				function SliderFunc:Set(v, silent)
 					v = math.clamp(Round(tonumber(v) or min, step), min, max)
 					SliderFunc.Value = v
-					TextBox.Text = tostring(v)
+					TextBox.Text = fmt(v)
 					ConfigData[configKey] = v
 					local scale = (v - min) / (max - min)
 					TweenService:Create(
@@ -2010,18 +2034,18 @@ function BananaHub:Window(GuiConfig)
 
 				TextBox.FocusLost:Connect(function()
 					if locked then
-						TextBox.Text = tostring(SliderFunc.Value)
+						TextBox.Text = fmt(SliderFunc.Value)
 						return
 					end
 					SliderFunc:Set(TextBox.Text)
-					TextBox.Text = tostring(SliderFunc.Value)
+					TextBox.Text = fmt(SliderFunc.Value)
 				end)
 
 				if not locked then
 					SliderFunc:Set(default, true)
 				else
 					SliderFunc.Value = default
-					TextBox.Text = tostring(default)
+					TextBox.Text = fmt(default)
 					RenderLockedRow(Slider, SliderTitle, widgetTitle, SectionAdd)
 				end
 
