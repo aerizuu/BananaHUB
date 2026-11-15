@@ -1,5 +1,5 @@
 local VERSION  = "0.1"
-local HUB_NAME = "Choco HUB"
+local HUB_NAME = "Banana HUB"
 local GAMES = {
     [118517641508250]      = "https://raw.githubusercontent.com/aerizuu/ChocoHUB/refs/heads/main/soreyaprem.luau",
 }
