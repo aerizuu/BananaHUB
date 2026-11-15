@@ -13,18 +13,11 @@
     No key system, no roles, no tiers. Everything is local.
 ]]
 
--- BANANAHUB_BUILD_BLACK_5
--- Build marker. The Soreya scripts look for this exact string before they
--- accept a copy of this library, so a stale workspace cache (the old blue /
--- see-through build) can never be loaded again.
-local BUILD = "black-5"
-
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
-local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
 local viewport = workspace.CurrentCamera.ViewportSize
@@ -88,11 +81,6 @@ local function LoadConfigElements()
 		end
 	end
 end
-
--- Panel surfaces. The window is a black card; rows sit a shade above it so
--- the background picture only shows faintly through them.
-local SURFACE = Color3.fromRGB(18, 18, 18)
-local SURFACE_SOFT = Color3.fromRGB(30, 30, 30)
 
 -- Tab icons. Only the ones Banana Hub's tabs ask for are kept.
 local Icons = {
@@ -159,10 +147,6 @@ local function MakeDraggable(topbarobject, object)
 				StartPosition.Y.Scale,
 				StartPosition.Y.Offset + Delta.Y
 			)
-			-- remember where the user parked the window so the open/close
-			-- animation reopens it in the same spot
-			frame:SetAttribute("BH_RestingX", pos.X.Offset)
-			frame:SetAttribute("BH_RestingY", pos.Y.Offset)
 			TweenService:Create(frame, TweenInfo.new(0.2), { Position = pos }):Play()
 		end
 
@@ -202,53 +186,18 @@ local function MakeDraggable(topbarobject, object)
 
 		frame.Size = UDim2.new(0, defSizeX, 0, defSizeY)
 
-		-- Grab area: sits over the bottom-right corner of the shadow ring and the
-		-- very corner of the panel. The visible lines are drawn inside this box
-		-- but outside the panel itself.
 		local changesizeobject = Instance.new("Frame")
 		changesizeobject.AnchorPoint = Vector2.new(1, 1)
 		changesizeobject.BackgroundTransparency = 1
-		changesizeobject.Size = UDim2.new(0, 34, 0, 34)
-		changesizeobject.Position = UDim2.new(1, 0, 1, 0)
-		changesizeobject.ZIndex = 10
+		changesizeobject.Size = UDim2.new(0, 40, 0, 40)
+		changesizeobject.Position = UDim2.new(1, 20, 1, 20)
 		changesizeobject.Name = "changesizeobject"
 		changesizeobject.Parent = frame
-
-		-- Resize grip: two short 45-degree lines just OUTSIDE the panel's
-		-- bottom-right corner, in the transparent shadow margin around it, so it
-		-- reads as "drag me bigger" without stealing space inside the UI.
-		-- The panel is inset 23.5px inside the holder, so offsets around 14-21px
-		-- from the holder corner hug the panel's corner from just outside it.
-		local function GripLine(inset, length)
-			local line = Instance.new("Frame")
-			line.Name = "ResizeGripLine"
-			line.AnchorPoint = Vector2.new(0.5, 0.5)
-			line.BackgroundColor3 = Color3.fromRGB(215, 215, 215)
-			line.BackgroundTransparency = 0.1
-			line.BorderSizePixel = 0
-			line.Position = UDim2.new(1, -inset, 1, -inset)
-			line.Size = UDim2.new(0, 2, 0, length)
-			line.Rotation = 45
-			line.ZIndex = 11
-			line.Parent = changesizeobject
-
-			local lineCorner = Instance.new("UICorner")
-			lineCorner.CornerRadius = UDim.new(1, 0)
-			lineCorner.Parent = line
-			return line
-		end
-
-		GripLine(14, 11)
-		GripLine(21, 11)
 
 		local function UpdateSize(input)
 			local Delta = input.Position - DragStart
 			local newWidth = math.max(StartSize.X.Offset + Delta.X, minSizeX)
 			local newHeight = math.max(StartSize.Y.Offset + Delta.Y, minSizeY)
-			-- remember the user's size so the open/close animation zooms back
-			-- to it instead of the size the script originally requested
-			frame:SetAttribute("BH_RestingW", newWidth)
-			frame:SetAttribute("BH_RestingH", newHeight)
 			TweenService:Create(frame, TweenInfo.new(0.2), { Size = UDim2.new(0, newWidth, 0, newHeight) }):Play()
 		end
 
@@ -326,7 +275,7 @@ function BananaHub:MakeNotify(NotifyConfig)
 	NotifyConfig.Title = NotifyConfig.Title or "Banana Hub"
 	NotifyConfig.Description = NotifyConfig.Description or "Notification"
 	NotifyConfig.Content = NotifyConfig.Content or "Content"
-	NotifyConfig.Color = NotifyConfig.Color or Color3.fromRGB(255, 255, 255)
+	NotifyConfig.Color = NotifyConfig.Color or Color3.fromRGB(0, 255, 255)
 	NotifyConfig.Time = NotifyConfig.Time or 0.5
 	NotifyConfig.Delay = NotifyConfig.Delay or 5
 
@@ -406,7 +355,7 @@ function BananaHub:MakeNotify(NotifyConfig)
 		UIStroke.Thickness = 1
 		UIStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 
-		LeftIcon.Image = NotifyConfig.Image or "rbxassetid://125326185088678"
+		LeftIcon.Image = NotifyConfig.Image or "rbxassetid://17495379799"
 		LeftIcon.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
 		LeftIcon.BackgroundTransparency = 0
 		LeftIcon.BorderSizePixel = 0
@@ -518,7 +467,7 @@ local function BananaNotify(msg, delay, color, title, desc)
 		Title = title or "Banana Hub",
 		Description = desc or "Notification",
 		Content = msg or "Content",
-		Color = color or Color3.fromRGB(255, 255, 255),
+		Color = color or Color3.fromRGB(0, 255, 255),
 		Delay = delay or 4,
 	})
 end
@@ -531,232 +480,13 @@ function BananaHub:Window(GuiConfig)
 	GuiConfig = GuiConfig or {}
 	GuiConfig.Title = GuiConfig.Title or "Banana Hub"
 	GuiConfig.Footer = GuiConfig.Footer or GuiConfig.Author or "Banana Hub"
-	GuiConfig.Color = GuiConfig.Color or Color3.fromRGB(255, 255, 255)
+	GuiConfig.Color = GuiConfig.Color or Color3.fromRGB(0, 255, 255)
 	GuiConfig["Tab Width"] = GuiConfig["Tab Width"] or 120
 	GuiConfig.Version = GuiConfig.Version or 1
-	GuiConfig.Icon = GuiConfig.Icon or "rbxassetid://125326185088678"
+	GuiConfig.Icon = GuiConfig.Icon or "rbxassetid://137004403340469"
 	GuiConfig.Image = GuiConfig.Image or GuiConfig.Icon
 
 	CURRENT_VERSION = GuiConfig.Version
-
-	-- Locked-feature panel. A free-script widget keeps its normal row on top and
-	-- gets a card underneath with a padlock and "Buy Premium to unlock this
-	-- feature". Everything is drawn from frames + gradients, so it needs no
-	-- asset ids and scales cleanly at any size.
-	local LOCK_TEXT = "Buy Premium to unlock this feature"
-
-	-- Premium accent used by the lock art (warm gold reads as "paid" against
-	-- the black panel and cannot be confused with the white UI accent).
-	local GOLD = Color3.fromRGB(255, 196, 61)
-	local GOLD_DIM = Color3.fromRGB(196, 142, 30)
-	local LOCK_BG = Color3.fromRGB(14, 13, 11)
-
-	-- Draws a padlock: a gold shackle behind a gradient body, with a keyhole
-	-- punched into it and a soft glow. `size` is the body width in px.
-	-- `hole` is the colour the shackle opening and keyhole are cut to (the
-	-- surface the lock sits on), so it reads as a real cut-out.
-	local function MakePadlock(parent, size, zIndex, hole)
-		hole = hole or LOCK_BG
-
-		local Icon = Instance.new("Frame")
-		Icon.Name = "LockIcon"
-		Icon.AnchorPoint = Vector2.new(0.5, 0)
-		Icon.BackgroundTransparency = 1
-		Icon.Size = UDim2.new(0, size, 0, math.floor(size * 1.3))
-		Icon.ZIndex = zIndex
-		Icon.Parent = parent
-
-		-- Soft halo behind the lock so it lifts off the black card.
-		local Glow = Instance.new("ImageLabel")
-		Glow.Name = "Glow"
-		Glow.AnchorPoint = Vector2.new(0.5, 0.5)
-		Glow.BackgroundTransparency = 1
-		Glow.Image = "rbxassetid://5028857084"
-		Glow.ImageColor3 = GOLD
-		Glow.ImageTransparency = 0.8
-		Glow.Position = UDim2.new(0.5, 0, 0.55, 0)
-		Glow.Size = UDim2.new(0, math.floor(size * 2.6), 0, math.floor(size * 2.6))
-		Glow.ZIndex = zIndex - 1
-		Glow.Parent = Icon
-
-		-- Shackle: a solid gold arch with the middle cut out. Drawn from two
-		-- frames rather than a UIStroke on a transparent frame, which renders
-		-- inconsistently across devices.
-		local shackleW = math.max(6, math.floor(size * 0.68))
-		local shackleH = math.max(6, math.floor(size * 0.72))
-		local thick = math.max(2, math.floor(size * 0.14))
-
-		local Shackle = Instance.new("Frame")
-		Shackle.Name = "Shackle"
-		Shackle.AnchorPoint = Vector2.new(0.5, 0)
-		Shackle.BackgroundColor3 = GOLD
-		Shackle.BorderSizePixel = 0
-		Shackle.Position = UDim2.new(0.5, 0, 0, 0)
-		Shackle.Size = UDim2.new(0, shackleW, 0, shackleH)
-		Shackle.ZIndex = zIndex
-		Shackle.Parent = Icon
-
-		local ShackleCorner = Instance.new("UICorner")
-		ShackleCorner.CornerRadius = UDim.new(0, math.floor(shackleW / 2))
-		ShackleCorner.Parent = Shackle
-
-		local ShackleGradient = Instance.new("UIGradient")
-		ShackleGradient.Rotation = 90
-		ShackleGradient.Color = ColorSequence.new(GOLD, GOLD_DIM)
-		ShackleGradient.Parent = Shackle
-
-		local ShackleHole = Instance.new("Frame")
-		ShackleHole.Name = "ShackleHole"
-		ShackleHole.AnchorPoint = Vector2.new(0.5, 0)
-		ShackleHole.BackgroundColor3 = hole
-		ShackleHole.BorderSizePixel = 0
-		ShackleHole.Position = UDim2.new(0.5, 0, 0, thick)
-		ShackleHole.Size = UDim2.new(0, shackleW - thick * 2, 0, shackleH - thick)
-		ShackleHole.ZIndex = zIndex + 1
-		ShackleHole.Parent = Shackle
-
-		local HoleCorner = Instance.new("UICorner")
-		HoleCorner.CornerRadius = UDim.new(0, math.floor((shackleW - thick * 2) / 2))
-		HoleCorner.Parent = ShackleHole
-
-		-- Body
-		local Body = Instance.new("Frame")
-		Body.Name = "LockBody"
-		Body.AnchorPoint = Vector2.new(0.5, 1)
-		Body.BackgroundColor3 = GOLD
-		Body.BorderSizePixel = 0
-		Body.Position = UDim2.new(0.5, 0, 1, 0)
-		Body.Size = UDim2.new(0, size, 0, math.floor(size * 0.7))
-		Body.ZIndex = zIndex + 2
-		Body.Parent = Icon
-
-		local BodyCorner = Instance.new("UICorner")
-		BodyCorner.CornerRadius = UDim.new(0, math.max(2, math.floor(size * 0.2)))
-		BodyCorner.Parent = Body
-
-		local BodyGradient = Instance.new("UIGradient")
-		BodyGradient.Rotation = 90
-		BodyGradient.Color = ColorSequence.new(GOLD, GOLD_DIM)
-		BodyGradient.Parent = Body
-
-		local BodyStroke = Instance.new("UIStroke")
-		BodyStroke.Color = Color3.fromRGB(255, 232, 168)
-		BodyStroke.Thickness = 1
-		BodyStroke.Transparency = 0.55
-		BodyStroke.Parent = Body
-
-		-- Keyhole: circle + stem, punched through to the surface colour.
-		local Keyhole = Instance.new("Frame")
-		Keyhole.Name = "Keyhole"
-		Keyhole.AnchorPoint = Vector2.new(0.5, 0)
-		Keyhole.BackgroundColor3 = hole
-		Keyhole.BorderSizePixel = 0
-		Keyhole.Position = UDim2.new(0.5, 0, 0, math.floor(size * 0.16))
-		Keyhole.Size = UDim2.new(0, math.max(2, math.floor(size * 0.2)), 0, math.max(2, math.floor(size * 0.2)))
-		Keyhole.ZIndex = zIndex + 3
-		Keyhole.Parent = Body
-
-		local KeyholeCorner = Instance.new("UICorner")
-		KeyholeCorner.CornerRadius = UDim.new(1, 0)
-		KeyholeCorner.Parent = Keyhole
-
-		local Stem = Instance.new("Frame")
-		Stem.Name = "Stem"
-		Stem.AnchorPoint = Vector2.new(0.5, 0)
-		Stem.BackgroundColor3 = hole
-		Stem.BorderSizePixel = 0
-		Stem.Position = UDim2.new(0.5, 0, 0, math.floor(size * 0.3))
-		Stem.Size = UDim2.new(0, math.max(1, math.floor(size * 0.09)), 0, math.floor(size * 0.24))
-		Stem.ZIndex = zIndex + 3
-		Stem.Parent = Body
-
-		local StemCorner = Instance.new("UICorner")
-		StemCorner.CornerRadius = UDim.new(1, 0)
-		StemCorner.Parent = Stem
-
-		return Icon
-	end
-
-	-- `sectionAdd` is the section body (a UIListLayout container) and `order`
-	-- is the LayoutOrder the card should take. The card is a *sibling* of the
-	-- widget, never a child: growing the widget would re-centre its switch or
-	-- slider in the middle of the card.
-	local function AddLockOverlay(sectionAdd, order)
-		local Box = Instance.new("Frame")
-		Box.Name = "LockBox"
-		Box.BackgroundColor3 = LOCK_BG
-		Box.BackgroundTransparency = 0
-		Box.BorderSizePixel = 0
-		Box.LayoutOrder = order
-		Box.Size = UDim2.new(1, 0, 0, 56)
-		Box.ZIndex = 5
-		Box.Parent = sectionAdd
-
-		local BoxCorner = Instance.new("UICorner")
-		BoxCorner.CornerRadius = UDim.new(0, 5)
-		BoxCorner.Parent = Box
-
-		local BoxStroke = Instance.new("UIStroke")
-		BoxStroke.Color = GOLD
-		BoxStroke.Transparency = 0.72
-		BoxStroke.Thickness = 1
-		BoxStroke.Parent = Box
-
-		-- Warm wash so the card is not a flat black rectangle.
-		local BoxGradient = Instance.new("UIGradient")
-		BoxGradient.Rotation = 90
-		BoxGradient.Color = ColorSequence.new(
-			Color3.fromRGB(34, 28, 16),
-			Color3.fromRGB(12, 12, 12))
-		BoxGradient.Transparency = NumberSequence.new({
-			NumberSequenceKeypoint.new(0, 0.35),
-			NumberSequenceKeypoint.new(1, 0.8),
-		})
-		BoxGradient.Parent = Box
-
-		local Icon = MakePadlock(Box, 17, 6)
-		Icon.AnchorPoint = Vector2.new(0, 0)
-		Icon.Position = UDim2.new(0, 12, 0, 16)
-
-		local Label = Instance.new("TextLabel")
-		Label.Name = "LockLabel"
-		Label.Font = Enum.Font.GothamBold
-		Label.Text = LOCK_TEXT
-		Label.TextColor3 = Color3.fromRGB(255, 226, 160)
-		Label.TextSize = 12
-		Label.TextXAlignment = Enum.TextXAlignment.Left
-		Label.TextWrapped = true
-		Label.BackgroundTransparency = 1
-		Label.Position = UDim2.new(0, 41, 0, 15)
-		Label.Size = UDim2.new(1, -53, 0, 15)
-		Label.ZIndex = 6
-		Label.Parent = Box
-
-		local Sub = Instance.new("TextLabel")
-		Sub.Name = "LockSub"
-		Sub.Font = Enum.Font.Gotham
-		Sub.Text = "Premium feature"
-		Sub.TextColor3 = Color3.fromRGB(150, 142, 126)
-		Sub.TextSize = 10
-		Sub.TextXAlignment = Enum.TextXAlignment.Left
-		Sub.BackgroundTransparency = 1
-		Sub.Position = UDim2.new(0, 41, 0, 32)
-		Sub.Size = UDim2.new(1, -53, 0, 12)
-		Sub.ZIndex = 6
-		Sub.Parent = Box
-
-		-- Once per section: a small padlock in the header, like the reference.
-		local section = sectionAdd and sectionAdd.Parent
-		if section and section.Name == "Section" and not section:GetAttribute("BH_Locked") then
-			section:SetAttribute("BH_Locked", true)
-			local real = section:FindFirstChild("SectionReal")
-			if real then
-				local head = MakePadlock(real, 9, 6, SURFACE)
-				head.AnchorPoint = Vector2.new(1, 0.5)
-				head.Position = UDim2.new(1, -32, 0.5, 0)
-			end
-		end
-	end
 
 	local GuiFunc = {}
 
@@ -783,6 +513,7 @@ function BananaHub:Window(GuiConfig)
 	local LayersFolder = Instance.new("Folder")
 	local LayersPageLayout = Instance.new("UIPageLayout")
 	local MainStroke = Instance.new("UIStroke")
+	local ThemeImage = Instance.new("ImageLabel")
 
 	BananaHubGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	BananaHubGui.Name = "BananaHub"
@@ -818,46 +549,9 @@ function BananaHub:Window(GuiConfig)
 	-- A numeric Theme is an image asset id (the original convention). Soreya
 	-- passes a palette name ("Dark"), which is not an asset, so fall through to
 	-- the solid dark panel instead of loading a broken image.
-	--
-	-- Background = picture for the panel. Roblox only draws rbxassetid images,
-	-- so an http(s) URL is fetched and turned into a custom asset first.
 	local themeAsset = GuiConfig.Theme
 	if type(themeAsset) == "number" then themeAsset = tostring(themeAsset) end
-
-	local panelImage
-	local background = GuiConfig.Background
-	if type(background) == "string" and background ~= "" then
-		if background:match("^https?://") then
-			-- Executors that expose getcustomasset can turn the downloaded file
-			-- into something Roblox will actually draw. Without it, hand the URL
-			-- to the ImageLabel anyway: patched executors render it, stock ones
-			-- just show the black panel.
-			panelImage = background
-			if writefile and getcustomasset then
-				local ext = background:match("%.(%a+)%s*$") or "png"
-				local path = "BananaHubBg." .. ext
-				local fetched, data = pcall(function() return game:HttpGet(background, true) end)
-				if fetched and type(data) == "string" and #data > 0 then
-					if pcall(writefile, path, data) then
-						local okAsset, asset = pcall(getcustomasset, path)
-						if okAsset and type(asset) == "string" then panelImage = asset end
-					end
-				end
-			end
-		else
-			panelImage = background
-		end
-	end
-
-	if panelImage then
-		Main:Destroy()
-		Main = Instance.new("ImageLabel")
-		Main.Image = panelImage
-		Main.ScaleType = Enum.ScaleType.Crop
-		Main.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-		Main.BackgroundTransparency = 0
-		Main.ImageTransparency = tonumber(GuiConfig.BackgroundTransparency) or 0.25
-	elseif type(themeAsset) == "string" and themeAsset:match("^%d+$") then
+	if type(themeAsset) == "string" and themeAsset:match("^%d+$") then
 		Main:Destroy()
 		Main = Instance.new("ImageLabel")
 		Main.Image = "rbxassetid://" .. themeAsset
@@ -866,7 +560,7 @@ function BananaHub:Window(GuiConfig)
 		Main.ImageTransparency = GuiConfig.ThemeTransparency or 0.15
 	else
 		Main.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-		Main.BackgroundTransparency = 0
+		Main.BackgroundTransparency = 0.15
 	end
 
 	Main.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -898,6 +592,35 @@ function BananaHub:Window(GuiConfig)
 	TitleIcon.Size = UDim2.new(0, 20, 0, 20)
 	TitleIcon.Image = GuiConfig.Icon
 
+	local ImageWrapper = Instance.new("Frame")
+	ImageWrapper.Name = "ImageWrapper"
+	ImageWrapper.Parent = Main
+	ImageWrapper.BackgroundTransparency = 1
+	ImageWrapper.Size = UDim2.new(1, 0, 1, 0)
+	ImageWrapper.ZIndex = 0
+	ImageWrapper.ClipsDescendants = true
+
+	ThemeImage.Name = "ThemeImage"
+	ThemeImage.Parent = ImageWrapper
+	ThemeImage.BackgroundTransparency = 1
+	ThemeImage.AnchorPoint = Vector2.new(1, 1)
+	ThemeImage.Position = UDim2.new(1, 0, 1, 0)
+	ThemeImage.Size = UDim2.new(0.55, 0, 1, 0)
+	ThemeImage.ZIndex = 0
+	ThemeImage.Image = "rbxassetid://16787098319"
+	ThemeImage.ImageTransparency = 0.45
+	ThemeImage.ScaleType = Enum.ScaleType.Fit
+
+	local Gradient = Instance.new("UIGradient")
+	Gradient.Rotation = 135
+	Gradient.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(0.45, 0.8),
+		NumberSequenceKeypoint.new(0.75, 0.2),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	Gradient.Parent = ThemeImage
+
 	TextLabel.Font = Enum.Font.GothamBold
 	TextLabel.Text = GuiConfig.Title
 	TextLabel.TextColor3 = GuiConfig.Color
@@ -912,10 +635,10 @@ function BananaHub:Window(GuiConfig)
 	TextLabel1.Text = GuiConfig.Footer
 	TextLabel1.TextColor3 = GuiConfig.Color
 	TextLabel1.TextSize = 14
+	TextLabel1.TextXAlignment = Enum.TextXAlignment.Left
 	TextLabel1.BackgroundTransparency = 0.999
-	TextLabel1.TextXAlignment = Enum.TextXAlignment.Right
-	TextLabel1.Size = UDim2.new(0, 240, 1, 0)
-	TextLabel1.Position = UDim2.new(1, -310, 0, 0)
+	TextLabel1.Size = UDim2.new(1, -(TextLabel.TextBounds.X + 104), 1, 0)
+	TextLabel1.Position = UDim2.new(0, 25 + TextLabel.TextBounds.X + 10, 0, 0)
 	TextLabel1.Parent = Top
 
 	Close.Font = Enum.Font.SourceSans
@@ -1040,7 +763,7 @@ function BananaHub:Window(GuiConfig)
 	local PlayerName = Instance.new("TextLabel")
 	PlayerName.Name = "PlayerName"
 	PlayerName.Font = Enum.Font.GothamBold
-	PlayerName.Text = LocalPlayer.DisplayName
+	PlayerName.Text = "" .. LocalPlayer.DisplayName
 	PlayerName.TextColor3 = Color3.fromRGB(180, 180, 180)
 	PlayerName.TextSize = 11
 	PlayerName.TextXAlignment = Enum.TextXAlignment.Left
@@ -1079,87 +802,14 @@ function BananaHub:Window(GuiConfig)
 	ScrollTab.ChildRemoved:Connect(UpdateSize1)
 
 	function GuiFunc:DestroyGui()
-		pcall(function() GuiFunc.CloseDropdowns() end)
 		pcall(function() BananaHubGui:Destroy() end)
 		local toggle = CoreGui:FindFirstChild("ToggleUIButton")
 		if toggle then pcall(function() toggle:Destroy() end) end
 	end
 
-	-- Smooth open/close. The window zooms in/out with a Quart ease instead of
-	-- popping in and out; it stays interactable the whole time and a close can
-	-- interrupt an in-progress open (and vice versa).
-	local BASE_POS = UDim2.new(0.5, 0, 0.5, 0)
-	local BASE_SIZE = nil   -- captured after the requested size is applied
-	local SizeTween = nil
-
-	local function CancelSizeTween()
-		if SizeTween then
-			pcall(function() SizeTween:Cancel() end)
-			SizeTween = nil
-		end
-	end
-
-	local function RestingSize()
-		if not DropShadowHolder then return nil end
-		local w = DropShadowHolder:GetAttribute("BH_RestingW")
-		local h = DropShadowHolder:GetAttribute("BH_RestingH")
-		if typeof(w) == "number" and typeof(h) == "number" and w > 0 and h > 0 then
-			return UDim2.new(0, w, 0, h)
-		end
-		return BASE_SIZE or DropShadowHolder.Size
-	end
-
-	-- The spot the user dragged the window to (falls back to dead centre).
-	local function RestingPos()
-		if not DropShadowHolder then return BASE_POS end
-		local x = DropShadowHolder:GetAttribute("BH_RestingX")
-		local y = DropShadowHolder:GetAttribute("BH_RestingY")
-		if typeof(x) == "number" and typeof(y) == "number" then
-			return UDim2.new(0.5, x, 0.5, y)
-		end
-		return BASE_POS
-	end
-
-	local function PlayOpen()
-		if not DropShadowHolder then return end
-		CancelSizeTween()
-		local target = RestingSize()
-		DropShadowHolder.Visible = true
-		DropShadowHolder.AnchorPoint = Vector2.new(0.5, 0.5)
-		DropShadowHolder.Position = RestingPos()
-		DropShadowHolder.Size = UDim2.new(
-			0, math.floor(target.X.Offset * 0.9),
-			0, math.floor(target.Y.Offset * 0.9))
-		SizeTween = TweenService:Create(
-			DropShadowHolder,
-			TweenInfo.new(0.26, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
-			{ Size = target })
-		SizeTween:Play()
-	end
-
-	local function PlayClose()
-		if not DropShadowHolder then return end
-		CancelSizeTween()
-		local target = RestingSize()
-		SizeTween = TweenService:Create(
-			DropShadowHolder,
-			TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
-			{ Size = UDim2.new(
-				0, math.floor(target.X.Offset * 0.9),
-				0, math.floor(target.Y.Offset * 0.9)) })
-		SizeTween:Play()
-		local thisTween = SizeTween
-		SizeTween.Completed:Connect(function()
-			if SizeTween ~= thisTween then return end   -- superseded by a new tween
-			if not DropShadowHolder then return end
-			DropShadowHolder.Visible = false
-			DropShadowHolder.Size = target
-		end)
-	end
-
 	Min.Activated:Connect(function()
 		CircleClick(Min, Mouse.X, Mouse.Y)
-		PlayClose()
+		DropShadowHolder.Visible = false
 	end)
 
 	Close.Activated:Connect(function()
@@ -1171,16 +821,16 @@ function BananaHub:Window(GuiConfig)
 	UserInputService.InputBegan:Connect(function(input, gpe)
 		if gpe then return end
 		if input.KeyCode == ToggleKey and DropShadowHolder then
-			if DropShadowHolder.Visible then PlayClose() else PlayOpen() end
+			DropShadowHolder.Visible = not DropShadowHolder.Visible
 		end
 	end)
 
 	function GuiFunc:SetVisible(v)
-		if v == false then PlayClose() else PlayOpen() end
+		DropShadowHolder.Visible = v ~= false
 	end
 
 	function GuiFunc:Toggle()
-		if DropShadowHolder.Visible then PlayClose() else PlayOpen() end
+		DropShadowHolder.Visible = not DropShadowHolder.Visible
 	end
 
 	function GuiFunc:SetPanelBackground() end
@@ -1201,85 +851,12 @@ function BananaHub:Window(GuiConfig)
 	if typeof(requested) == "UDim2" and (requested.X.Offset > 0 or requested.Y.Offset > 0) then
 		DropShadowHolder.Size = UDim2.new(0, math.max(requested.X.Offset, 420), 0, math.max(requested.Y.Offset, 300))
 	end
-	BASE_SIZE = DropShadowHolder.Size
-	-- Animate in on first launch too, so the window never pops into place.
-	task.defer(PlayOpen)
 
 	GuiFunc.__gui = BananaHubGui
 	GuiFunc.__nameTab = NameTab
 	GuiFunc.__pageLayout = LayersPageLayout
 	GuiFunc.__window = GuiConfig
 	GuiFunc.__main = Main
-
-	-- Only one dropdown list stays open at a time. Each entry is
-	-- { Header = row, List = floating list, Close = fn }.
-	local OpenDropdowns = {}
-
-	local function closeAllDropdowns()
-		-- Snapshot first: a list's Close also unregisters itself.
-		local open = OpenDropdowns
-		OpenDropdowns = {}
-		for _, entry in ipairs(open) do
-			if type(entry) == "table" and entry.Close then pcall(entry.Close) end
-		end
-	end
-	GuiFunc.CloseDropdowns = closeAllDropdowns
-
-	-- Floating layer for open dropdown lists. With ZIndexBehavior.Sibling a
-	-- child of Main is always drawn above Main's other children, so a list that
-	-- lives here escapes its row, its section and the scrolling frame instead of
-	-- being clipped or painted over by later widgets.
-	local OverlayLayer = Instance.new("Frame")
-	OverlayLayer.Name = "OverlayLayer"
-	OverlayLayer.BackgroundTransparency = 1
-	OverlayLayer.BorderSizePixel = 0
-	OverlayLayer.Size = UDim2.new(1, 0, 1, 0)
-	OverlayLayer.Active = false
-	OverlayLayer.ZIndex = 500
-	OverlayLayer.Parent = Main
-
-	-- Close an open list when the player clicks anywhere that is not that
-	-- list's own header or its options. This is done by hit-testing instead of
-	-- with an invisible full-panel button: a catcher would swallow the click
-	-- meant for another dropdown's header, and it could not be layered under the
-	-- page anyway (ZIndexBehavior.Sibling always draws a child above its
-	-- parent's siblings, so anything covering the page also covers every
-	-- dropdown header).
-	local function pointInside(gui, x, y)
-		if not gui or not gui.Visible then return false end
-		local p, s = gui.AbsolutePosition, gui.AbsoluteSize
-		return x >= p.X and x <= p.X + s.X
-			and y >= p.Y and y <= p.Y + s.Y
-	end
-
-	UserInputService.InputBegan:Connect(function(input)
-		if #OpenDropdowns == 0 then return end
-		if input.UserInputType ~= Enum.UserInputType.MouseButton1
-			and input.UserInputType ~= Enum.UserInputType.Touch then return end
-
-		-- GetMouseLocation is inset-adjusted, which is the same space
-		-- GuiObject.AbsolutePosition uses. A touch reports raw screen pixels,
-		-- so the top-bar inset is subtracted to match.
-		local points = {}
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			points[1] = UserInputService:GetMouseLocation()
-		else
-			local inset = GuiService:GetGuiInset()
-			points[1] = Vector2.new(input.Position.X, input.Position.Y - inset.Y)
-			points[2] = Vector2.new(input.Position.X, input.Position.Y)
-		end
-
-		for _, entry in ipairs(OpenDropdowns) do
-			if type(entry) == "table" then
-				for _, p in ipairs(points) do
-					if pointInside(entry.Header, p.X, p.Y) or pointInside(entry.List, p.X, p.Y) then
-						return
-					end
-				end
-			end
-		end
-		closeAllDropdowns()
-	end)
 
 	-- ---------------------------------------------------------------
 	-- Icon lookup
@@ -1339,6 +916,8 @@ function BananaHub:Window(GuiConfig)
 	-- ordering across the window.
 	-- ---------------------------------------------------------------
 	local CountTab = 0
+	-- Only one dropdown list stays open at a time.
+	local OpenDropdowns = {}
 
 	function GuiFunc:Tab(TabConfig)
 		TabConfig = TabConfig or {}
@@ -1439,9 +1018,6 @@ function BananaHub:Window(GuiConfig)
 
 		TabButton.Activated:Connect(function()
 			CircleClick(TabButton, Mouse.X, Mouse.Y)
-			-- A floating dropdown list is anchored to a row on the old page, so
-			-- it must not survive a tab change.
-			pcall(function() GuiFunc.CloseDropdowns() end)
 			local FrameChoose
 			for _, s in ipairs(ScrollTab:GetChildren()) do
 				for _, v in ipairs(s:GetChildren()) do
@@ -1516,8 +1092,8 @@ function BananaHub:Window(GuiConfig)
 			Section.Parent = ScrolLayers
 
 			SectionReal.AnchorPoint = Vector2.new(0.5, 0)
-			SectionReal.BackgroundColor3 = SURFACE
-			SectionReal.BackgroundTransparency = 0.2
+			SectionReal.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			SectionReal.BackgroundTransparency = 0.935
 			SectionReal.BorderSizePixel = 0
 			SectionReal.Position = UDim2.new(0.5, 0, 0, 0)
 			SectionReal.Size = UDim2.new(1, -2, 0, 30)
@@ -1632,9 +1208,6 @@ function BananaHub:Window(GuiConfig)
 				if isAnimating then return end
 				isAnimating = true
 				CircleClick(SectionButton, Mouse.X, Mouse.Y)
-				-- Collapsing a section moves every row below it, so an open list
-				-- would be left pointing at the wrong place.
-				pcall(function() GuiFunc.CloseDropdowns() end)
 				local tweenInfo = TweenInfo.new(ANIM_TIME, ANIM_STYLE, ANIM_DIR)
 				OpenSection = not OpenSection
 
@@ -1673,6 +1246,14 @@ function BananaHub:Window(GuiConfig)
 				return CountItem - 1
 			end
 
+			-- Widgets that change their own height (the dropdown when it opens)
+			-- call this so the section grows with them; both the section and
+			-- its body clip descendants, so a taller child is invisible until
+			-- the ancestors are resized.
+			local function bumpLayout()
+				task.defer(UpdateSizeSection)
+			end
+
 			local Items = {}
 
 			function Items:Space()
@@ -1684,6 +1265,9 @@ function BananaHub:Window(GuiConfig)
 				cfg = cfg or {}
 				local widgetTitle = tostring(cfg.Title or "Toggle")
 				local locked = cfg.Locked == true
+				if locked then
+					widgetTitle = widgetTitle .. "  (" .. tostring(cfg.LockedTitle or "Locked") .. ")"
+				end
 				local configKey = "Toggle_" .. widgetTitle
 				local value = cfg.Value == true
 				if ConfigData[configKey] ~= nil then value = ConfigData[configKey] == true end
@@ -1700,8 +1284,8 @@ function BananaHub:Window(GuiConfig)
 				local ToggleCircle = Instance.new("Frame")
 				local UICorner23 = Instance.new("UICorner")
 
-				Toggle.BackgroundColor3 = SURFACE
-				Toggle.BackgroundTransparency = 0.2
+				Toggle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				Toggle.BackgroundTransparency = 0.935
 				Toggle.BorderSizePixel = 0
 				Toggle.LayoutOrder = nextOrder()
 				Toggle.Size = UDim2.new(1, 0, 0, 46)
@@ -1747,8 +1331,7 @@ function BananaHub:Window(GuiConfig)
 				ToggleButton.Parent = Toggle
 
 				FeatureFrame2.AnchorPoint = Vector2.new(1, 0.5)
-				FeatureFrame2.BackgroundColor3 = SURFACE_SOFT
-				FeatureFrame2.BackgroundTransparency = 0.25
+				FeatureFrame2.BackgroundTransparency = 0.92
 				FeatureFrame2.BorderSizePixel = 0
 				FeatureFrame2.Position = UDim2.new(1, -15, 0.5, 0)
 				FeatureFrame2.Size = UDim2.new(0, 30, 0, 15)
@@ -1787,7 +1370,7 @@ function BananaHub:Window(GuiConfig)
 						TweenService:Create(ToggleTitle, TweenInfo.new(0.2), { TextColor3 = Color3.fromRGB(231, 231, 231) }):Play()
 						TweenService:Create(ToggleCircle, TweenInfo.new(0.2), { Position = UDim2.new(0, 0, 0, 0) }):Play()
 						TweenService:Create(UIStroke8, TweenInfo.new(0.2), { Color = Color3.fromRGB(255, 255, 255), Transparency = 0.9 }):Play()
-						TweenService:Create(FeatureFrame2, TweenInfo.new(0.2), { BackgroundColor3 = SURFACE_SOFT, BackgroundTransparency = 0.25 }):Play()
+						TweenService:Create(FeatureFrame2, TweenInfo.new(0.2), { BackgroundColor3 = Color3.fromRGB(255, 255, 255), BackgroundTransparency = 0.92 }):Play()
 					end
 
 					if not applying and not silent and type(cfg.Callback) == "function" then
@@ -1808,10 +1391,7 @@ function BananaHub:Window(GuiConfig)
 						ToggleFunc:Set(not ToggleFunc.Value)
 					end)
 				else
-					-- locked: dim only the switch, keep the title readable, and
-					-- drop the padlock card underneath the row
-					ToggleCircle.BackgroundColor3 = Color3.fromRGB(120, 120, 120)
-					AddLockOverlay(SectionAdd, nextOrder())
+					Toggle.BackgroundTransparency = 0.97
 				end
 
 				ToggleFunc:Set(ToggleFunc.Value, true)
@@ -1822,6 +1402,9 @@ function BananaHub:Window(GuiConfig)
 				cfg = cfg or {}
 				local widgetTitle = tostring(cfg.Title or "Slider")
 				local locked = cfg.Locked == true
+				if locked then
+					widgetTitle = widgetTitle .. "  (" .. tostring(cfg.LockedTitle or "Locked") .. ")"
+				end
 
 				local range = type(cfg.Value) == "table" and cfg.Value or {}
 				local min = tonumber(range.Min) or tonumber(cfg.Min) or 0
@@ -1848,8 +1431,8 @@ function BananaHub:Window(GuiConfig)
 				local SliderCircle = Instance.new("Frame")
 				local UICorner19 = Instance.new("UICorner")
 
-				Slider.BackgroundColor3 = SURFACE
-				Slider.BackgroundTransparency = 0.2
+				Slider.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				Slider.BackgroundTransparency = 0.935
 				Slider.BorderSizePixel = 0
 				Slider.LayoutOrder = nextOrder()
 				Slider.Size = UDim2.new(1, 0, 0, 46)
@@ -1890,8 +1473,8 @@ function BananaHub:Window(GuiConfig)
 				TextBox.Parent = SliderInput
 
 				SliderFrame.AnchorPoint = Vector2.new(1, 0.5)
-				SliderFrame.BackgroundColor3 = SURFACE_SOFT
-				SliderFrame.BackgroundTransparency = 0.35
+				SliderFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				SliderFrame.BackgroundTransparency = 0.8
 				SliderFrame.BorderSizePixel = 0
 				SliderFrame.Position = UDim2.new(1, -20, 0.5, 0)
 				SliderFrame.Size = UDim2.new(0, 100, 0, 3)
@@ -1991,7 +1574,7 @@ function BananaHub:Window(GuiConfig)
 					TextBox.Text = tostring(default)
 					TextBox.TextEditable = false
 					TextBox.Active = false
-					AddLockOverlay(SectionAdd, nextOrder())
+					Slider.BackgroundTransparency = 0.97
 				end
 
 				return registerElement(configKey, SliderFunc)
@@ -2001,6 +1584,9 @@ function BananaHub:Window(GuiConfig)
 				cfg = cfg or {}
 				local widgetTitle = tostring(cfg.Title or "Dropdown")
 				local locked = cfg.Locked == true
+				if locked then
+					widgetTitle = widgetTitle .. "  (" .. tostring(cfg.LockedTitle or "Locked") .. ")"
+				end
 
 				local options = cfg.Values or cfg.Options or {}
 				local multi = cfg.Multi == true
@@ -2016,10 +1602,10 @@ function BananaHub:Window(GuiConfig)
 				local UICorner11 = Instance.new("UICorner")
 				local OptionSelecting = Instance.new("TextLabel")
 				local OptionImg = Instance.new("ImageLabel")
-				local OptionList = Instance.new("ScrollingFrame")
+				local OptionList = Instance.new("Frame")
 
-				Dropdown.BackgroundColor3 = SURFACE
-				Dropdown.BackgroundTransparency = 0.2
+				Dropdown.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				Dropdown.BackgroundTransparency = 0.935
 				Dropdown.BorderSizePixel = 0
 				Dropdown.LayoutOrder = nextOrder()
 				Dropdown.Size = UDim2.new(1, 0, 0, 46)
@@ -2041,8 +1627,8 @@ function BananaHub:Window(GuiConfig)
 				DropdownTitle.Parent = Dropdown
 
 				SelectOptionsFrame.AnchorPoint = Vector2.new(1, 0.5)
-				SelectOptionsFrame.BackgroundColor3 = SURFACE
-				SelectOptionsFrame.BackgroundTransparency = 0.15
+				SelectOptionsFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				SelectOptionsFrame.BackgroundTransparency = 0.95
 				SelectOptionsFrame.Position = UDim2.new(1, -7, 0.5, 0)
 				SelectOptionsFrame.Size = UDim2.new(0, 148, 0, 26)
 				SelectOptionsFrame.Name = "SelectOptionsFrame"
@@ -2073,53 +1659,29 @@ function BananaHub:Window(GuiConfig)
 				OptionImg.Name = "OptionImg"
 				OptionImg.Parent = SelectOptionsFrame
 
-				-- Drop list: an opaque floating panel in the window overlay, so the
-				-- section never clips it and neighbouring widgets never paint over
-				-- it. It is a ScrollingFrame so a long option list (rarities,
-				-- servers, ...) stays reachable instead of being cut off.
-				OptionList.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
-				OptionList.BackgroundTransparency = 0
+				-- Drop list: an overlay panel that grows the parent frame so it
+				-- is not clipped by the section.
+				OptionList.BackgroundColor3 = Color3.fromRGB(22, 22, 26)
+				OptionList.BackgroundTransparency = 0.05
 				OptionList.BorderSizePixel = 0
 				OptionList.Visible = false
-				OptionList.Size = UDim2.new(0, 200, 0, 0)
-				OptionList.ZIndex = 501
-				OptionList.ClipsDescendants = true
-				OptionList.ScrollBarThickness = 3
-				OptionList.ScrollBarImageColor3 = Color3.fromRGB(90, 90, 90)
-				OptionList.ScrollingDirection = Enum.ScrollingDirection.Y
-				OptionList.CanvasSize = UDim2.new(0, 0, 0, 0)
-				OptionList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+				OptionList.Position = UDim2.new(0, 10, 0, 40)
+				OptionList.Size = UDim2.new(1, -20, 0, 0)
+				OptionList.ZIndex = 20
 				OptionList.Name = "OptionList"
-				OptionList.Parent = OverlayLayer
+				OptionList.Parent = Dropdown
 
 				local OptionListCorner = Instance.new("UICorner")
 				OptionListCorner.CornerRadius = UDim.new(0, 4)
 				OptionListCorner.Parent = OptionList
-
-				local OptionListStroke = Instance.new("UIStroke")
-				OptionListStroke.Color = GuiConfig.Color
-				OptionListStroke.Transparency = 0.75
-				OptionListStroke.Thickness = 1
-				OptionListStroke.Parent = OptionList
 
 				local OptionListLayout = Instance.new("UIListLayout")
 				OptionListLayout.Padding = UDim.new(0, 2)
 				OptionListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 				OptionListLayout.Parent = OptionList
 
-				local OptionListPad = Instance.new("UIPadding")
-				OptionListPad.PaddingTop = UDim.new(0, 4)
-				OptionListPad.PaddingBottom = UDim.new(0, 4)
-				OptionListPad.PaddingLeft = UDim.new(0, 4)
-				OptionListPad.PaddingRight = UDim.new(0, 4)
-				OptionListPad.Parent = OptionList
-
 				local rows = {}
 				local expandedHeight = 0
-
-				-- Close/open this one list. Declared before buildRows because the
-				-- row click handlers close the list after a single pick.
-				local closeList, openList
 
 				local function summary()
 					if multi then
@@ -2168,7 +1730,6 @@ function BananaHub:Window(GuiConfig)
 						rowFrame.BorderSizePixel = 0
 						rowFrame.Size = UDim2.new(1, 0, 0, 26)
 						rowFrame.LayoutOrder = i
-						rowFrame.ZIndex = 502
 						rowFrame.Name = "Option"
 						rowFrame.Parent = OptionList
 
@@ -2179,7 +1740,6 @@ function BananaHub:Window(GuiConfig)
 						rowButton.Text = ""
 						rowButton.BackgroundTransparency = 1
 						rowButton.Size = UDim2.new(1, 0, 1, 0)
-						rowButton.ZIndex = 503
 						rowButton.Parent = rowFrame
 
 						rowLabel.Font = Enum.Font.GothamBold
@@ -2190,7 +1750,6 @@ function BananaHub:Window(GuiConfig)
 						rowLabel.BackgroundTransparency = 1
 						rowLabel.Position = UDim2.new(0, 8, 0, 0)
 						rowLabel.Size = UDim2.new(1, -16, 1, 0)
-						rowLabel.ZIndex = 504
 						rowLabel.Name = "OptionText"
 						rowLabel.Parent = rowFrame
 
@@ -2205,15 +1764,17 @@ function BananaHub:Window(GuiConfig)
 								end
 								DropdownFunc:Set(list)
 							else
+								OptionList.Visible = false
+								Dropdown.Size = UDim2.new(1, 0, 0, 46)
 								DropdownFunc:Set(value)
-								closeList()
+								bumpLayout()
 							end
 						end)
 
 						rows[#rows + 1] = {frame = rowFrame, label = rowLabel, value = value}
 					end
 
-					expandedHeight = math.min(#DropdownFunc.Options, 9) * 28 + 8
+					expandedHeight = math.min(#DropdownFunc.Options, 8) * 28 + 8
 					refreshVisuals()
 				end
 
@@ -2223,62 +1784,28 @@ function BananaHub:Window(GuiConfig)
 				DropdownButton.Name = "DropdownButton"
 				DropdownButton.Parent = Dropdown
 
-				-- Close just this list (used by the header toggle and by row picks).
-				-- Declared local (not global) so each dropdown keeps its own pair.
-				closeList = function()
-					OptionList.Visible = false
-					for i = #OpenDropdowns, 1, -1 do
-						if OpenDropdowns[i] and OpenDropdowns[i].List == OptionList then
-							table.remove(OpenDropdowns, i)
-						end
-					end
-				end
-
-				openList = function()
-					-- Anchor the floating panel directly under its row, in the
-					-- window overlay's coordinate space, and flip it above the row
-					-- when there is not enough room below.
-					local row = Dropdown.AbsolutePosition
-					local origin = OverlayLayer.AbsolutePosition
-					local rowH = Dropdown.AbsoluteSize.Y
-					local width = math.max(Dropdown.AbsoluteSize.X - 20, 120)
-					local height = math.min(expandedHeight, OverlayLayer.AbsoluteSize.Y - 16)
-
-					local y = row.Y - origin.Y + rowH + 4
-					if y + height > OverlayLayer.AbsoluteSize.Y - 8 then
-						local above = row.Y - origin.Y - height - 4
-						if above >= 8 then
-							y = above
-						else
-							y = math.max(8, OverlayLayer.AbsoluteSize.Y - 8 - height)
-						end
-					end
-
-					OptionList.Position = UDim2.fromOffset(row.X - origin.X + 10, y)
-					OptionList.Size = UDim2.fromOffset(width, height)
-					OptionList.CanvasSize = UDim2.new(0, 0, 0, 0)
-					OptionList.Visible = true
-				end
-
 				DropdownButton.Activated:Connect(function()
 					if locked then return end
 
-					-- If THIS list is already open, the click closes it. Checking
-					-- this first matters: the "close every other dropdown" pass
-					-- below used to include this one, so the toggle re-opened it
-					-- and an open list could never be closed.
-					if OptionList.Visible then
-						closeList()
-						return
+					-- Close any other open dropdown first.
+					for _, close in ipairs(OpenDropdowns) do
+						if close ~= nil then pcall(close) end
 					end
+					OpenDropdowns = {}
 
-					closeAllDropdowns()
-					openList()
-					OpenDropdowns[#OpenDropdowns + 1] = {
-						Header = Dropdown,
-						List = OptionList,
-						Close = closeList,
-					}
+					OptionList.Visible = not OptionList.Visible
+					if OptionList.Visible then
+						OptionList.Size = UDim2.new(1, -20, 0, expandedHeight)
+						Dropdown.Size = UDim2.new(1, 0, 0, 44 + expandedHeight)
+						OpenDropdowns[#OpenDropdowns + 1] = function()
+							OptionList.Visible = false
+							Dropdown.Size = UDim2.new(1, 0, 0, 46)
+							bumpLayout()
+						end
+					else
+						Dropdown.Size = UDim2.new(1, 0, 0, 46)
+					end
+					bumpLayout()
 				end)
 
 				function DropdownFunc:Set(v, silent)
@@ -2316,23 +1843,13 @@ function BananaHub:Window(GuiConfig)
 				function DropdownFunc:Refresh(list)
 					DropdownFunc.Options = list or {}
 					buildRows()
-					if OptionList.Visible then openList() end
+					if OptionList.Visible then
+						OptionList.Size = UDim2.new(1, -20, 0, expandedHeight)
+						Dropdown.Size = UDim2.new(1, 0, 0, 44 + expandedHeight)
+					end
 				end
 
 				buildRows()
-
-				-- Scrolling the page moves the row, so re-anchor the floating list;
-				-- if the row leaves the viewport, close it instead of leaving it
-				-- floating over unrelated rows.
-				ScrolLayers:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
-					if not OptionList.Visible then return end
-					local rowY = Dropdown.AbsolutePosition.Y - ScrolLayers.AbsolutePosition.Y
-					if rowY < 0 or rowY > ScrolLayers.AbsoluteSize.Y then
-						closeList()
-					else
-						openList()
-					end
-				end)
 
 				-- Initial selection: a saved value wins, otherwise cfg.Value.
 				-- The first Set is silent because the Soreya callbacks already
@@ -2351,7 +1868,7 @@ function BananaHub:Window(GuiConfig)
 				DropdownFunc.Default = cfg.Value
 
 				if locked then
-					AddLockOverlay(SectionAdd, nextOrder())
+					Dropdown.BackgroundTransparency = 0.97
 				end
 
 				return registerElement(configKey, DropdownFunc)
@@ -2373,8 +1890,8 @@ function BananaHub:Window(GuiConfig)
 				local UICorner13 = Instance.new("UICorner")
 				local InputTextBox = Instance.new("TextBox")
 
-				Input.BackgroundColor3 = SURFACE
-				Input.BackgroundTransparency = 0.2
+				Input.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				Input.BackgroundTransparency = 0.935
 				Input.BorderSizePixel = 0
 				Input.LayoutOrder = nextOrder()
 				Input.Size = UDim2.new(1, 0, 0, 68)
@@ -2395,8 +1912,8 @@ function BananaHub:Window(GuiConfig)
 				InputTitle.Name = "InputTitle"
 				InputTitle.Parent = Input
 
-				InputFrame.BackgroundColor3 = SURFACE_SOFT
-				InputFrame.BackgroundTransparency = 0.3
+				InputFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				InputFrame.BackgroundTransparency = 0.95
 				InputFrame.BorderSizePixel = 0
 				InputFrame.ClipsDescendants = true
 				InputFrame.Position = UDim2.new(0, 10, 0, 30)
@@ -2446,6 +1963,9 @@ function BananaHub:Window(GuiConfig)
 				cfg = cfg or {}
 				local widgetTitle = tostring(cfg.Title or "Button")
 				local locked = cfg.Locked == true
+				if locked then
+					widgetTitle = widgetTitle .. "  (" .. tostring(cfg.LockedTitle or "Locked") .. ")"
+				end
 
 				local Button = Instance.new("Frame")
 				local UICorner = Instance.new("UICorner")
@@ -2460,8 +1980,8 @@ function BananaHub:Window(GuiConfig)
 
 				MainButton.Font = Enum.Font.GothamBold
 				MainButton.Text = ""
-				MainButton.BackgroundColor3 = SURFACE
-				MainButton.BackgroundTransparency = 0.2
+				MainButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				MainButton.BackgroundTransparency = 0.935
 				MainButton.BorderSizePixel = 0
 				MainButton.Size = UDim2.new(1, 0, 1, 0)
 				MainButton.Name = "MainButton"
@@ -2496,9 +2016,8 @@ function BananaHub:Window(GuiConfig)
 				end)
 
 				if locked then
+					MainButton.BackgroundTransparency = 0.97
 					ButtonLabel.TextColor3 = Color3.fromRGB(140, 140, 140)
-					-- keep the button as the top row, then add the padlock card
-					AddLockOverlay(SectionAdd, nextOrder())
 				end
 
 				return ButtonFunc
@@ -2514,8 +2033,8 @@ function BananaHub:Window(GuiConfig)
 				local ParagraphTitle = Instance.new("TextLabel")
 				local ParagraphContent = Instance.new("TextLabel")
 
-				Paragraph.BackgroundColor3 = SURFACE
-				Paragraph.BackgroundTransparency = 0.2
+				Paragraph.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				Paragraph.BackgroundTransparency = 0.935
 				Paragraph.BorderSizePixel = 0
 				Paragraph.LayoutOrder = nextOrder()
 				Paragraph.Size = UDim2.new(1, 0, 0, 44)
@@ -2678,9 +2197,5 @@ function BananaHub:Notify(cfg)
 end
 
 function BananaHub:SetTheme() end
-
--- Let the loader confirm which build it got.
-BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_5"
 
 return BananaHub
