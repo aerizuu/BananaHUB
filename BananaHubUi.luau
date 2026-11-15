@@ -13,11 +13,11 @@
     No key system, no roles, no tiers. Everything is local.
 ]]
 
--- BANANAHUB_BUILD_BLACK_8
+-- BANANAHUB_BUILD_BLACK_9
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (the old blue /
 -- see-through build) can never be loaded again.
-local BUILD = "black-8"
+local BUILD = "black-9"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -1222,6 +1222,9 @@ function BananaHub:Window(GuiConfig)
 		end
 	end
 	GuiFunc.CloseDropdowns = closeAllDropdowns
+	-- Also reachable as a top-level call, so a script can close lists without
+	-- knowing about GuiFunc.
+	BananaHub.CloseDropdowns = closeAllDropdowns
 
 	-- Floating layer for open dropdown lists. With ZIndexBehavior.Sibling a
 	-- child of Main is always drawn above Main's other children, so a list that
@@ -2116,7 +2119,7 @@ function BananaHub:Window(GuiConfig)
 				local expandedHeight = 0
 
 				-- Close/open this one list. Declared before buildRows because the
-				-- row click handlers close the list after a single pick.
+				-- row click handlers close the list after a pick.
 				local closeList, openList
 
 				local function summary()
@@ -2202,14 +2205,14 @@ function BananaHub:Window(GuiConfig)
 									list[#list + 1] = value
 								end
 								DropdownFunc:Set(list)
-								-- Multi stays open: picking several rarities in a
-								-- row is the whole point of the mode.
 							else
 								DropdownFunc:Set(value)
-								-- A single pick is a finished choice, so the list
-								-- closes instead of hovering over the page.
-								closeList()
 							end
+							-- Picking an option EXECUTES the choice, so the list
+							-- closes every time - single or multi. Leaving it
+							-- open meant it hovered over the row it belonged to
+							-- and over the buttons underneath.
+							closeList()
 						end)
 
 						rows[#rows + 1] = {frame = rowFrame, label = rowLabel, value = value}
@@ -2302,6 +2305,11 @@ function BananaHub:Window(GuiConfig)
 					ConfigData[configKey] = DropdownFunc.Value
 					refreshVisuals()
 
+					-- Any value change closes the list, including programmatic
+					-- ones (a feature calling dd:Set / dd:SetValue). Executing a
+					-- choice should never leave the panel open over the page.
+					if OptionList.Visible then closeList() end
+
 					if not silent and type(cfg.Callback) == "function" then
 						pcall(cfg.Callback, DropdownFunc.Value)
 					end
@@ -2318,7 +2326,15 @@ function BananaHub:Window(GuiConfig)
 				function DropdownFunc:Refresh(list)
 					DropdownFunc.Options = list or {}
 					buildRows()
-					if OptionList.Visible then openList() end
+					-- Never re-open a closed list here. Refresh is called while a
+					-- feature runs (e.g. "Refresh Players"), and re-opening the
+					-- list would pop it back over the page for no reason.
+				end
+
+				-- Public: let the feature scripts close every open list after
+				-- they finish executing, without reaching into library internals.
+				function DropdownFunc:Close()
+					closeList()
 				end
 
 				buildRows()
@@ -2694,6 +2710,6 @@ function BananaHub:SetTheme() end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_8"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_9"
 
 return BananaHub
