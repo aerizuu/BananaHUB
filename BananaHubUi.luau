@@ -13,11 +13,11 @@
     No key system, no roles, no tiers. Everything is local.
 ]]
 
--- BANANAHUB_BUILD_BLACK_15
+-- BANANAHUB_BUILD_BLACK_17
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (or an earlier
 -- build, which had no floating open icon) can never be loaded again.
-local BUILD = "black-15"
+local BUILD = "black-17"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -1589,6 +1589,10 @@ function BananaHub:Window(GuiConfig)
 
 	function GuiFunc:DestroyGui()
 		pcall(function() GuiFunc.CloseDropdowns() end)
+		pcall(function()
+			local c = _G.__bananaCloseConfirm
+			if c then c:Destroy(); _G.__bananaCloseConfirm = nil end
+		end)
 		pcall(function() BananaHubGui:Destroy() end)
 		local toggle = CoreGui:FindFirstChild("ToggleUIButton")
 		if toggle then pcall(function() toggle:Destroy() end) end
@@ -1661,11 +1665,19 @@ function BananaHub:Window(GuiConfig)
 		SizeTween:Play()
 	end
 
+	-- Declared up here (not with the rest of the prompt) so PlayClose can hide
+	-- the prompt: shutting or minimising the window while the prompt is up would
+	-- otherwise leave a dimmer over the whole screen with nothing behind it.
+	local ConfirmGui
+
 	local function PlayClose()
 		if not DropShadowHolder then return end
 		-- A floating list belongs to a row inside the window; it must not be
 		-- left hanging on screen while the window is shut.
 		pcall(function() GuiFunc.CloseDropdowns() end)
+		-- Shutting or minimising the window while the prompt is up would leave a
+		-- dimmer over the whole screen with nothing behind it.
+		if ConfirmGui then pcall(function() ConfirmGui.Enabled = false end) end
 		CancelSizeTween()
 		local target = RestingSize()
 		SizeTween = TweenService:Create(
@@ -1703,10 +1715,189 @@ function BananaHub:Window(GuiConfig)
 		PlayClose()
 	end)
 
-	Close.Activated:Connect(function()
-		CircleClick(Close, Mouse.X, Mouse.Y)
-		GuiFunc:DestroyGui()
-	end)
+	--───────────────────────────────────────────────────────────────────────
+	-- CLOSE CONFIRMATION
+	--
+	-- The X in the top-right corner now asks before it tears the hub down, so a
+	-- mis-tap does not cost the user their session. The prompt is its own
+	-- ScreenGui at DisplayOrder 999999 so nothing in the hub can paint over it,
+	-- with a dimmer behind the card that swallows clicks aimed at the window
+	-- underneath and counts as a "no".
+	--
+	-- Everything except ConfirmGui is scoped inside the do-block below, so the
+	-- window function only gains one register.
+	--
+	-- Min (minimise) and the floating icon are deliberately NOT gated: only the
+	-- destructive X is, because minimising is reversible and closing is not.
+	--───────────────────────────────────────────────────────────────────────
+	do
+		-- A previous execution may have left a prompt behind; it would sit at
+		-- DisplayOrder 999999 and block every click, so clear it first.
+		pcall(function()
+			local old = _G.__bananaCloseConfirm
+			if old then old:Destroy() end
+			_G.__bananaCloseConfirm = nil
+		end)
+
+		ConfirmGui = Instance.new("ScreenGui")
+		ConfirmGui.Name = "BananaHubCloseConfirm"
+		ConfirmGui.ResetOnSpawn = false
+		ConfirmGui.IgnoreGuiInset = true
+		ConfirmGui.DisplayOrder = 999999
+		-- Starts hidden; the X flips it on.
+		ConfirmGui.Enabled = false
+		-- Parented to the same hidden parent as the hub so it dies with it and is
+		-- never left behind on an unload. Also recorded globally so DestroyGui can
+		-- reach it whatever parent MountGui picked.
+		MountGui(ConfirmGui)
+		_G.__bananaCloseConfirm = ConfirmGui
+
+		local Dim = Instance.new("TextButton")
+		Dim.Name = "Dim"
+		Dim.Text = ""
+		Dim.AutoButtonColor = false
+		Dim.Active = true
+		Dim.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		Dim.BackgroundTransparency = 0.45
+		Dim.BorderSizePixel = 0
+		Dim.Size = UDim2.new(1, 0, 1, 0)
+		Dim.ZIndex = 1
+		Dim.Parent = ConfirmGui
+
+		local Card = Instance.new("Frame")
+		Card.Name = "Card"
+		Card.AnchorPoint = Vector2.new(0.5, 0.5)
+		Card.Position = UDim2.new(0.5, 0, 0.5, 0)
+		-- 300 is comfortable on desktop; shrink to fit a narrow phone viewport so
+		-- the two buttons never run off the card. Reads the LIVE viewport, since
+		-- the module-level `viewport` is a snapshot from load time.
+		local liveCam = workspace.CurrentCamera
+		local liveVp = (liveCam and liveCam.ViewportSize) or viewport
+		local cardW = math.min(300, math.max(220, (liveVp.X or 800) * 0.86))
+		Card.Size = UDim2.new(0, math.floor(cardW), 0, 132)
+		Card.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+		Card.BorderSizePixel = 0
+		Card.ZIndex = 2
+		-- Active so a click on the card body is swallowed instead of falling
+		-- through to the dimmer and cancelling the prompt by accident.
+		Card.Active = true
+		Card.Parent = ConfirmGui
+
+		local CardCorner = Instance.new("UICorner")
+		CardCorner.CornerRadius = UDim.new(0, 8)
+		CardCorner.Parent = Card
+
+		-- Pop-in is a UIScale rather than a Size tween: the buttons keep their
+		-- proportions instead of being squeezed while the card grows.
+		local CardScale = Instance.new("UIScale")
+		CardScale.Scale = 1
+		CardScale.Parent = Card
+
+		local CardStroke = Instance.new("UIStroke")
+		CardStroke.Color = GuiConfig.Color
+		CardStroke.Transparency = 0.55
+		CardStroke.Thickness = 1.2
+		CardStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		CardStroke.Parent = Card
+
+		local CardTitle = Instance.new("TextLabel")
+		CardTitle.Text = "Close Banana Hub?"
+		CardTitle.Font = Enum.Font.GothamBold
+		CardTitle.TextSize = 15
+		CardTitle.TextColor3 = GuiConfig.Color
+		CardTitle.TextXAlignment = Enum.TextXAlignment.Left
+		CardTitle.BackgroundTransparency = 1
+		CardTitle.Position = UDim2.new(0, 18, 0, 16)
+		CardTitle.Size = UDim2.new(1, -36, 0, 20)
+		CardTitle.ZIndex = 3
+		CardTitle.Parent = Card
+
+		local CardDesc = Instance.new("TextLabel")
+		CardDesc.Text = "This unloads the script and stops everything that is running."
+		CardDesc.Font = Enum.Font.Gotham
+		CardDesc.TextSize = 12
+		CardDesc.TextColor3 = Color3.fromRGB(160, 160, 160)
+		CardDesc.TextXAlignment = Enum.TextXAlignment.Left
+		CardDesc.TextYAlignment = Enum.TextYAlignment.Top
+		CardDesc.TextWrapped = true
+		CardDesc.BackgroundTransparency = 1
+		CardDesc.Position = UDim2.new(0, 18, 0, 42)
+		CardDesc.Size = UDim2.new(1, -36, 0, 34)
+		CardDesc.ZIndex = 3
+		CardDesc.Parent = Card
+
+		-- Cancel (safe) on the right, Close (destructive) to its left. Both are
+		-- half-width so they stay inside the card on a narrow phone screen.
+		local CancelBtn = Instance.new("TextButton")
+		CancelBtn.Text = "Cancel"
+		CancelBtn.Font = Enum.Font.GothamBold
+		CancelBtn.TextSize = 12
+		CancelBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
+		CancelBtn.BackgroundColor3 = SURFACE
+		CancelBtn.BorderSizePixel = 0
+		CancelBtn.AutoButtonColor = true
+		CancelBtn.AnchorPoint = Vector2.new(1, 1)
+		CancelBtn.Position = UDim2.new(1, -14, 1, -14)
+		CancelBtn.Size = UDim2.new(0.5, -21, 0, 30)
+		CancelBtn.ZIndex = 3
+		CancelBtn.Parent = Card
+		local CancelCorner = Instance.new("UICorner")
+		CancelCorner.CornerRadius = UDim.new(0, 6)
+		CancelCorner.Parent = CancelBtn
+
+		local CloseBtn = Instance.new("TextButton")
+		CloseBtn.Text = "Close"
+		CloseBtn.Font = Enum.Font.GothamBold
+		CloseBtn.TextSize = 12
+		CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+		CloseBtn.BackgroundColor3 = Color3.fromRGB(120, 32, 32)
+		CloseBtn.BorderSizePixel = 0
+		CloseBtn.AutoButtonColor = true
+		CloseBtn.AnchorPoint = Vector2.new(0, 1)
+		CloseBtn.Position = UDim2.new(0, 14, 1, -14)
+		CloseBtn.Size = UDim2.new(0.5, -21, 0, 30)
+		CloseBtn.ZIndex = 3
+		CloseBtn.Parent = Card
+		local CloseCorner = Instance.new("UICorner")
+		CloseCorner.CornerRadius = UDim.new(0, 6)
+		CloseCorner.Parent = CloseBtn
+
+		local function CloseConfirm()
+			pcall(function() ConfirmGui.Enabled = false end)
+		end
+
+		Dim.Activated:Connect(CloseConfirm)
+		CancelBtn.Activated:Connect(CloseConfirm)
+		CloseBtn.Activated:Connect(function()
+			CloseConfirm()
+			GuiFunc:DestroyGui()
+		end)
+
+		-- Esc cancels. Roblox marks Escape as game-processed because it opens the
+		-- in-game menu, so gpe is deliberately NOT checked here - otherwise the
+		-- prompt would stay up behind the menu. The handler is a no-op unless the
+		-- prompt is actually showing, and pcall-guarded so it cannot throw once
+		-- DestroyGui has torn the prompt down.
+		UserInputService.InputBegan:Connect(function(input)
+			if input.KeyCode ~= Enum.KeyCode.Escape then return end
+			pcall(function()
+				if ConfirmGui and ConfirmGui.Enabled then CloseConfirm() end
+			end)
+		end)
+
+		Close.Activated:Connect(function()
+			CircleClick(Close, Mouse.X, Mouse.Y)
+			-- A floating dropdown list would otherwise sit over the prompt.
+			pcall(function() GuiFunc.CloseDropdowns() end)
+			ConfirmGui.Enabled = true
+			-- Pop the card in so the prompt reads as a deliberate step, not a glitch.
+			CardScale.Scale = 0.82
+			TweenService:Create(
+				CardScale,
+				TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+				{ Scale = 1 }):Play()
+		end)
+	end
 
 	local ToggleKey = Enum.KeyCode.Insert
 	UserInputService.InputBegan:Connect(function(input, gpe)
@@ -3734,6 +3925,6 @@ function BananaHub:SetTheme() end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_15"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_17"
 
 return BananaHub
