@@ -10,14 +10,15 @@
     SetTheme, Window:Tab, Section:Toggle ... Space) so the Soreya feature code
     runs unchanged, while the window itself is the Banana Hub interface.
 
-    No key system, no roles, no tiers. Everything is local.
+    BananaHub:KeyGate(opts) is the premium licence check. It is opt-in: the
+    free script never calls it, so the library stays usable without a key.
 ]]
 
--- BANANAHUB_BUILD_BLACK_18
+-- BANANAHUB_BUILD_BLACK_19
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (or an earlier
 -- build, which had no floating open icon) can never be loaded again.
-local BUILD = "black-18"
+local BUILD = "black-19"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -3926,37 +3927,132 @@ function BananaHub:SetTheme() end
 --───────────────────────────────────────────────────────────────────────────
 -- PREMIUM KEY GATE
 --
--- One key, one device. The gate asks the key site over HTTP on EVERY run, so
+-- One key, one device. The gate asks Supabase over HTTPS on EVERY run, so
 -- revoking or expiring a key takes effect immediately instead of being cached
 -- forever on the client. The script never decides by itself that a key is
 -- good.
 --
--- Endpoints expected (POST, JSON in, JSON out):
+-- Supabase RPC expected (POST, JSON in, JSON out):
 --
---   /api/validate   { key, hwid }  -> { ok, code, message, plan, expiresAt }
---   /api/claim      { key, hwid }  -> binds the key to this device
---   /api/reset-hwid { key }        -> unbinds, limited to 1x per 24h
+--   /rest/v1/rpc/lua_key_api { p_action, p_key, p_device_hash }
+--
+--   p_action = "validate" -> is this key valid right now for this device
+--   p_action = "claim"    -> validate AND bind to this device in one call
+--
+-- Unlinking a device is NOT done from inside the game. The user opens the key
+-- site and resets the device link there, which is why there is no reset call
+-- here: the prompt offers only CONTINUE and GET KEY.
 --
 -- `code` values the UI reacts to: OK, UNCLAIMED, KEY_NOT_FOUND, KEY_REVOKED,
--- KEY_EXPIRED, HWID_MISMATCH, RESET_COOLDOWN.
+-- KEY_EXPIRED, HWID_MISMATCH.
 --
 -- Usage (premium script, before any feature code runs):
 --
 --     local ok, info = WindUI:KeyGate({
---         SiteURL = "https://banana-steel.vercel.app",
 --         Product = "Banana Hub Premium",
 --     })
 --     if not ok then return end
 --
--- `info` on success: { key, plan, planLabel, expiresAt, lifetime }
+-- `SiteURL` is optional and only affects what GET KEY opens; the RPC host is
+-- always KeyAPI.BaseURL. `info` on success: { key, plan, planLabel, expiresAt,
+-- lifetime }.
 --───────────────────────────────────────────────────────────────────────────
 BananaHub.KeyAPI = {
-	BaseURL      = "https://banana-steel.vercel.app",
-	ValidatePath = "/api/validate",
-	ClaimPath    = "/api/claim",
-	ResetPath    = "/api/reset-hwid",
+	-- The RPC host. This is what the key check talks to.
+	BaseURL      = "https://uabsvvhfdfbzgrdxnheq.supabase.co",
+	AnonKey      = "sb_publishable_n4dYQFT9zRH9as5Bet_EcA_LTEirBYm",
+	RpcPath      = "/rest/v1/rpc/lua_key_api",
 	Timeout      = 12,
+	-- The human-facing site, opened by GET KEY. Deliberately separate from
+	-- BaseURL: the two were the same variable before, so passing the Vercel URL
+	-- in as SiteURL sent every RPC to the Vercel host and 404'd.
+	SiteURL      = "https://banana-steel.vercel.app",
 }
+
+-- Pure-Luau SHA-256. The RPC wants a lowercase 64-char hex digest, but not
+-- every executor exposes crypt.hash or sha256 - and when one did not, the old
+-- code called error(), which killed the whole script before the prompt could
+-- even appear. Hashing here means the gate works on any Luau executor.
+local function Sha256Hex(message)
+	local band, bor, bxor, bnot = bit32.band, bit32.bor, bit32.bxor, bit32.bnot
+	local rshift, lshift = bit32.rshift, bit32.lshift
+
+	local function rrotate(x, n)
+		n = n % 32
+		if n == 0 then return x end
+		return bor(rshift(x, n), lshift(x, 32 - n))
+	end
+
+	local K = {
+		0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+		0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+		0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+		0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+		0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+		0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+		0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+		0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+	}
+
+	local bytes = { string.byte(message, 1, #message) }
+	local bitLen = #message * 8
+	bytes[#bytes + 1] = 0x80
+	while #bytes % 64 ~= 56 do
+		bytes[#bytes + 1] = 0
+	end
+	-- 64-bit big-endian length. Split in halves so the value never has to be
+	-- represented exactly beyond 2^32.
+	local hi = math.floor(bitLen / 4294967296)
+	local lo = bitLen % 4294967296
+	for _, v in ipairs({ hi, lo }) do
+		bytes[#bytes + 1] = math.floor(v / 16777216) % 256
+		bytes[#bytes + 1] = math.floor(v / 65536) % 256
+		bytes[#bytes + 1] = math.floor(v / 256) % 256
+		bytes[#bytes + 1] = v % 256
+	end
+
+	local h = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+		0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 }
+	local w = {}
+
+	for chunk = 1, #bytes, 64 do
+		for i = 0, 15 do
+			local o = chunk + i * 4
+			w[i] = bor(lshift(bytes[o], 24), lshift(bytes[o + 1], 16),
+				lshift(bytes[o + 2], 8), bytes[o + 3])
+		end
+		for i = 16, 63 do
+			local x, y = w[i - 15], w[i - 2]
+			local s0 = bxor(rrotate(x, 7), rrotate(x, 18), rshift(x, 3))
+			local s1 = bxor(rrotate(y, 17), rrotate(y, 19), rshift(y, 10))
+			w[i] = band(w[i - 16] + s0 + w[i - 7] + s1, 0xffffffff)
+		end
+
+		local a, b, c, d, e, f, g, hh = h[1], h[2], h[3], h[4], h[5], h[6], h[7], h[8]
+		for i = 0, 63 do
+			local S1 = bxor(rrotate(e, 6), rrotate(e, 11), rrotate(e, 25))
+			local ch = bxor(band(e, f), band(bnot(e), g))
+			local t1 = band(hh + S1 + ch + K[i + 1] + w[i], 0xffffffff)
+			local S0 = bxor(rrotate(a, 2), rrotate(a, 13), rrotate(a, 22))
+			local maj = bxor(band(a, b), band(a, c), band(b, c))
+			local t2 = band(S0 + maj, 0xffffffff)
+
+			hh, g, f, e = g, f, e, band(d + t1, 0xffffffff)
+			d, c, b, a = c, b, a, band(t1 + t2, 0xffffffff)
+		end
+
+		h[1], h[2], h[3], h[4] = band(h[1] + a, 0xffffffff), band(h[2] + b, 0xffffffff),
+			band(h[3] + c, 0xffffffff), band(h[4] + d, 0xffffffff)
+		h[5], h[6], h[7], h[8] = band(h[5] + e, 0xffffffff), band(h[6] + f, 0xffffffff),
+			band(h[7] + g, 0xffffffff), band(h[8] + hh, 0xffffffff)
+	end
+
+	local out = {}
+	for i = 1, 8 do
+		out[i] = string.format("%08x", h[i])
+	end
+	return table.concat(out)
+end
 
 -- Stable per-device id, cached for the session. Executors expose different
 -- sources, so try each in order of quality: a real hardware id first, then
@@ -3981,21 +4077,42 @@ function BananaHub.GetHWID()
 		raw = lp and ("USERID-" .. tostring(lp.UserId)) or "UNKNOWN"
 	end
 
-	-- The server only accepts [A-Z0-9:_-.] so normalise here rather than have a
-	-- legitimate device rejected for a stray character.
-	local clean = tostring(raw):upper():gsub("[^A-Z0-9:_%-%.]", "")
-	if clean == "" then clean = "UNKNOWN" end
-	if #clean > 96 then clean = clean:sub(1, 96) end
+	-- Hash locally; the RPC accepts only a lowercase 64-character SHA-256 digest.
+	-- Order: executor-native (fastest, trusted) then the pure-Luau fallback so a
+	-- missing crypt/sha256 degrades instead of killing the script.
+	local digest
+	if type(crypt) == "table" and type(crypt.hash) == "function" then
+		local ok, value = pcall(crypt.hash, tostring(raw), "sha256")
+		if ok and type(value) == "string" then digest = value:lower() end
+	end
+	if not digest and type(sha256) == "function" then
+		local ok, value = pcall(sha256, tostring(raw))
+		if ok and type(value) == "string" then digest = value:lower() end
+	end
+	if not digest then
+		local ok, value = pcall(Sha256Hex, tostring(raw))
+		if ok and type(value) == "string" then digest = value:lower() end
+	end
+	if not digest or #digest ~= 64 or not digest:match("^[0-9a-f]+$") then
+		-- Last resort: never hard-error here. A device id that is merely
+		-- imperfect still enforces one-key-per-device; erroring would leave the
+		-- player with no prompt and no explanation.
+		digest = Sha256Hex("FALLBACK-" .. tostring(raw))
+	end
 
-	BananaHub._hwid = clean
-	return clean
+	BananaHub._hwid = digest
+	return digest
 end
 
 function BananaHub:KeyGate(opts)
 	opts = opts or {}
 
 	local API       = BananaHub.KeyAPI
-	local siteURL   = tostring(opts.SiteURL or API.BaseURL)
+	-- APIHost is where the RPC lives; siteURL is only ever opened in a browser.
+	-- Keeping them separate means a caller can pass the site URL without
+	-- accidentally redirecting the key check away from Supabase.
+	local apiHost   = tostring(API.BaseURL)
+	local siteURL   = tostring(opts.SiteURL or API.SiteURL or API.BaseURL)
 	local product   = tostring(opts.Product or "Banana Hub Premium")
 	local alwaysAsk = opts.AlwaysAsk == true
 	local saveFile  = tostring(opts.SaveFile or "BananaHubPremiumKey.txt")
@@ -4013,9 +4130,9 @@ function BananaHub:KeyGate(opts)
 	-- exists, so the prompt must never be blocked by it. Bound the wait and
 	-- treat a timeout as "server unreachable".
 	local function post(path, payload)
-		local url = siteURL .. path
+		local url = apiHost .. path
 		local body = HttpService:JSONEncode(payload)
-		local done, text = false, nil
+		local done, text, responseStatus = false, nil, nil
 
 		-- Executors expose the HTTP function under different names, and not all
 		-- of them are guaranteed to work in every game. Try each in turn and
@@ -4035,17 +4152,27 @@ function BananaHub:KeyGate(opts)
 				local ok, r = pcall(fn, {
 					Url = url,
 					Method = "POST",
-					Headers = { ["Content-Type"] = "application/json" },
+					Headers = {
+						["Content-Type"] = "application/json",
+						["apikey"] = API.AnonKey,
+						["Authorization"] = "Bearer " .. API.AnonKey,
+					},
 					Body = body,
 				})
 				if ok and type(r) == "table" then
 					local b = r.Body or r.body
-					if type(b) == "string" and #b > 0 then return b end
+					if type(b) == "string" and #b > 0 then
+						responseStatus = tonumber(r.StatusCode or r.Status or r.status_code)
+						return b
+					end
 				end
 			end
 
 			local ok, res = pcall(function()
-				return game:HttpPost(url, body, "Application/JSON", true)
+				return game:HttpPost(url, body, "Application/JSON", true, {
+					["apikey"] = API.AnonKey,
+					["Authorization"] = "Bearer " .. API.AnonKey,
+				})
 			end)
 			if ok and type(res) == "string" and #res > 0 then return res end
 			return nil
@@ -4063,10 +4190,19 @@ function BananaHub:KeyGate(opts)
 		end
 		if not done or not text then return nil, "Cannot reach the key server." end
 
+		-- Supabase reports a rejected key as HTTP 400 with the actual reason in
+		-- the body: {"code":"P0001","message":"invalid_key"}. Throwing the body
+		-- away on non-2xx would replace every real reason with "HTTP 400", so
+		-- decode first and let normalize() turn the message into a code. Only a
+		-- body that will not decode at all is reported as a transport failure.
 		local okDecode, decoded = pcall(function() return HttpService:JSONDecode(text) end)
 		if not okDecode or type(decoded) ~= "table" then
+			if responseStatus and (responseStatus < 200 or responseStatus >= 300) then
+				return nil, "Supabase request failed (HTTP " .. responseStatus .. ")."
+			end
 			return nil, "The key server sent an unreadable reply."
 		end
+		decoded._httpStatus = responseStatus
 		return decoded, nil
 	end
 
@@ -4076,7 +4212,53 @@ function BananaHub:KeyGate(opts)
 	-- normalise them into one canonical form here rather than making the site
 	-- match this file.
 	local function normalize(raw)
-		if type(raw) ~= "table" then return nil end
+		if raw == nil then return nil end
+
+		-- PostgREST shapes the reply by how the function was declared, and the
+		-- declaration is on the server, so all of these must work:
+		--
+		--   returns json/jsonb        -> { ... }            (object)
+		--   returns table(...)        -> [ { ... } ]        (array of rows)
+		--   returns text              -> "OK"               (bare string)
+		--   returns boolean           -> true               (bare boolean)
+		--
+		-- Anything not unwrapped here would be rejected as unreadable and a
+		-- paying customer would be told their key is bad.
+		if type(raw) == "string" then
+			local s = raw:lower():match("^%s*(.-)%s*$")
+			if s == "ok" or s == "true" or s == "valid" or s == "success" then
+				raw = { ok = true }
+			else
+				raw = { message = raw }
+			end
+		elseif type(raw) == "boolean" then
+			raw = { ok = raw }
+		elseif type(raw) ~= "table" then
+			raw = { message = tostring(raw) }
+		elseif raw[1] ~= nil then
+			-- Array: the payload is the first row. Scalars are handled as above.
+			local first = raw[1]
+			if type(first) == "string" then
+				local s = first:lower():match("^%s*(.-)%s*$")
+				raw = { ok = (s == "ok" or s == "true" or s == "valid" or s == "success"),
+					message = first, _httpStatus = raw._httpStatus }
+			elseif type(first) == "table" then
+				local inner = first
+				-- A `returns table(result jsonb)` row looks like { result = {...} },
+				-- and a `returns table(t jsonb)` row can be any single column name.
+				-- If the row has no verdict fields, dive into its one table value.
+				if inner.ok == nil and inner.success == nil and inner.valid == nil
+					and inner.code == nil and inner.status == nil then
+					for _, v in pairs(inner) do
+						if type(v) == "table" then inner = v break end
+					end
+				end
+				raw = { data = inner, _httpStatus = raw._httpStatus }
+			elseif type(first) == "boolean" then
+				raw = { ok = first, _httpStatus = raw._httpStatus }
+			end
+		end
+
 		-- Unwrap a single "data"/"result"/"body" envelope.
 		local r = raw
 		if type(r.data) == "table" and r.ok == nil and r.success == nil then
@@ -4104,21 +4286,50 @@ function BananaHub:KeyGate(opts)
 
 		local code = r.code or r.error or r.status
 		code = type(code) == "string" and code:upper() or nil
+
+		-- Supabase reports failures as {"code":"P0001","message":"invalid_key"}.
+		-- That `code` is a PostgreSQL error class, not a verdict - reading it as
+		-- one meant the real reason in `message` was never consulted, so every
+		-- rejection fell through to a bare "Key rejected". Treat the known
+		-- Postgres/Supabase error prefixes as "no code" and let the message
+		-- decide.
+		if code and (code:match("^PGRST%d") or code:match("^P%d%d%d%d%d$")
+			or code == "P0001") then
+			code = nil
+		end
+
+		-- The RPC's own vocabulary, spelled exactly as lua_key_api returns it.
+		local msgRaw = tostring(r.message or r.reason or r.msg or ""):lower()
+		local function fromMessage()
+			if msgRaw:find("expired") then return "KEY_EXPIRED" end
+			if msgRaw:find("revoked") then return "KEY_REVOKED" end
+			if msgRaw:find("invalid_key") or msgRaw:find("not_found")
+				or msgRaw:find("not found") then return "KEY_NOT_FOUND" end
+			if msgRaw:find("device") or msgRaw:find("hwid")
+				or msgRaw:find("mismatch") then return "HWID_MISMATCH" end
+			if msgRaw:find("claim") or msgRaw:find("not_linked")
+				or msgRaw:find("not linked") or msgRaw:find("unbound") then
+				return "UNCLAIMED"
+			end
+			return nil
+		end
+
 		-- Some backends report a boolean plus a free-text reason instead of a
 		-- code; derive the code the UI branches on from the text.
 		if not code then
-			local msg = tostring(r.message or r.reason or r.msg or ""):lower()
-			if msg:find("expired") then code = "KEY_EXPIRED"
-			elseif msg:find("revoked") then code = "KEY_REVOKED"
-			elseif msg:find("another device") or msg:find("hwid") then code = "HWID_MISMATCH"
-			elseif msg:find("not found") or msg:find("invalid") then code = "KEY_NOT_FOUND"
-			-- Only a SUCCESSFUL reply can mean "valid but unbound". A failed
-			-- reply whose text happens to mention claiming is a rejection, not an
-			-- invitation to run the claim step.
-			elseif okFlag and (msg:find("claim") or msg:find("not linked") or msg:find("bind")) then
-				code = "UNCLAIMED"
-			else code = okFlag and "OK" or "KEY_NOT_FOUND"
-			end
+			code = fromMessage()
+			if not code then code = okFlag and "OK" or "KEY_NOT_FOUND" end
+		end
+
+		-- A non-2xx reply is a rejection no matter how it was phrased, so the
+		-- message wins over an ok=true that came back with an error status.
+		-- Read from `raw`, not `r`: the envelope unwrap above may have replaced
+		-- `r` with the inner table, and the status was stamped on the outside.
+		local httpStatus = tonumber(raw._httpStatus)
+		if httpStatus and httpStatus >= 400 then
+			okFlag = false
+			local fromStatus = fromMessage()
+			if fromStatus then code = fromStatus end
 		end
 
 		-- The UI only branches on OK / UNCLAIMED / HWID_MISMATCH and treats
@@ -4168,9 +4379,9 @@ function BananaHub:KeyGate(opts)
 		}
 	end
 
-	-- Every caller gets the canonical shape, so submit/resetDevice never have to
-	-- know which JSON dialect the site answered in. Declared after normalize
-	-- because it calls it - a forward reference here would be nil at call time.
+	-- Every caller gets the canonical shape, so submit never has to know which
+	-- JSON dialect the site answered in. Declared after normalize because it
+	-- calls it - a forward reference here would be nil at call time.
 	local function postJSON(path, payload)
 		local raw, err = post(path, payload)
 		if not raw then return nil, err end
@@ -4211,7 +4422,7 @@ function BananaHub:KeyGate(opts)
 	if not alwaysAsk then
 		local saved = readSaved()
 		if saved then
-			local res = postJSON(API.ValidatePath, { key = saved, hwid = hwid })
+			local res = postJSON(API.RpcPath, { p_action = "validate", p_key = saved, p_device_hash = hwid })
 			if res and res.ok and res.code == "OK" then
 				return true, infoOf(res, saved)
 			end
@@ -4252,7 +4463,7 @@ function BananaHub:KeyGate(opts)
 	local panel = Instance.new("Frame")
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.Position = UDim2.fromScale(0.5, 0.5)
-	panel.Size = UDim2.fromOffset(360, 300)
+	panel.Size = UDim2.fromOffset(360, 276)
 	panel.BackgroundColor3 = C_BG
 	panel.BorderSizePixel = 0
 	panel.ZIndex = 2
@@ -4450,20 +4661,16 @@ function BananaHub:KeyGate(opts)
 		C_SURFACE, C_TEXT)
 	getKeyBtn.AnchorPoint = Vector2.new(1, 0)
 
-	local resetBtn = button("RESET DEVICE LINK",
-		UDim2.new(0, 16, 0, 236), UDim2.new(1, -32, 0, 30),
-		C_SURFACE, Color3.fromRGB(220, 190, 140))
-
 	local footer = Instance.new("TextLabel")
 	footer.BackgroundTransparency = 1
 	footer.Font = Enum.Font.Gotham
-	footer.Text = "One key works on one device. Resetting the link is limited to once per 24h."
+	footer.Text = "One key works on one device. To unlink this device, open the key site."
 	footer.TextColor3 = Color3.fromRGB(90, 90, 90)
 	footer.TextSize = 9
 	footer.TextXAlignment = Enum.TextXAlignment.Left
 	footer.TextWrapped = true
-	footer.Position = UDim2.new(0, 16, 0, 272)
-	footer.Size = UDim2.new(1, -32, 0, 20)
+	footer.Position = UDim2.new(0, 16, 0, 240)
+	footer.Size = UDim2.new(1, -32, 0, 24)
 	footer.ZIndex = 4
 	footer.Parent = panel
 
@@ -4509,14 +4716,14 @@ function BananaHub:KeyGate(opts)
 		inputBox.TextEditable = false
 		inputBox.Active = false
 		continueBtn.Active = false
-		resetBtn.Active = false
 		continueBtn.Text = "LOADING"
 		task.delay(0.4, stop)
 	end
 
-	-- Validate, and if the server says the key is simply not bound yet, claim it
-	-- on this device. That two-step is what makes "1 key = 1 device" real: the
-	-- bind happens server-side and the second device is refused.
+	-- One call does both jobs: the RPC validates the key and binds it to this
+	-- device atomically. That is what makes "1 key = 1 device" real - the bind
+	-- happens server-side, so a second device is refused with HWID_MISMATCH
+	-- until the link is reset on the site.
 	local function submit()
 		if finished or accepted or busy then return end
 
@@ -4529,7 +4736,7 @@ function BananaHub:KeyGate(opts)
 
 		busy = true
 		setStatus("Checking key...", "info")
-		local res, err = postJSON(API.ValidatePath, { key = entered, hwid = hwid })
+		local res, err = postJSON(API.RpcPath, { p_action = "claim", p_key = entered, p_device_hash = hwid })
 		if finished then
 			busy = false
 			return
@@ -4540,28 +4747,6 @@ function BananaHub:KeyGate(opts)
 			return
 		end
 
-		-- UNCLAIMED is checked FIRST and deliberately, because the server reports
-		-- it as ok=true (the key itself is valid, it is just not bound yet). If
-		-- the generic ok check ran first, an unbound key would be accepted
-		-- without ever being linked to this device - which is exactly the
-		-- one-key-per-device rule this gate exists to enforce.
-		if res.code == "UNCLAIMED" then
-			setStatus("Linking this device...", "info")
-			local claimed, cerr = postJSON(API.ClaimPath, { key = entered, hwid = hwid })
-			busy = false
-			if finished then return end
-			if not claimed then
-				setStatus(cerr or "Could not link this device.", "err")
-				return
-			end
-			if claimed.ok then
-				accept(claimed, entered)
-			else
-				setStatus(claimed.message or "Could not link this device.", "err")
-			end
-			return
-		end
-
 		busy = false
 		if res.ok then
 			accept(res, entered)
@@ -4569,46 +4754,25 @@ function BananaHub:KeyGate(opts)
 		end
 
 		if res.code == "HWID_MISMATCH" then
-			setStatus("Locked to another device. Use RESET DEVICE LINK.", "err")
+			setStatus("Locked to another device. Unlink it on the key site.", "err")
+			return
+		end
+
+		-- claim is expected to bind, so this should not happen - but if the RPC
+		-- answers that the key is still unbound, say so plainly instead of
+		-- showing a bare "Key rejected" the player cannot act on.
+		if res.code == "UNCLAIMED" then
+			setStatus("Could not link this device. Try again, or check the key site.", "err")
 			return
 		end
 
 		setStatus(res.message or "Key rejected.", "err")
 	end
 
-	local function resetDevice()
-		if finished or busy then return end
-		local entered = (inputBox.Text or ""):gsub("%s+", ""):upper()
-		if entered == "" then
-			local saved = readSaved()
-			entered = saved or ""
-		end
-		if entered == "" then
-			setStatus("Type the key you want to unlink.", "err")
-			return
-		end
-
-		busy = true
-		setStatus("Clearing the device link...", "info")
-		local res, err = postJSON(API.ResetPath, { key = entered })
-		busy = false
-		if finished then return end
-		if not res then
-			setStatus(err or "Cannot reach the key server.", "err")
-			return
-		end
-		if res.ok then
-			setStatus("Link cleared. Press CONTINUE to link this device.", "ok")
-		else
-			setStatus(res.message or "Could not reset this key.", "err")
-		end
-	end
-
 	conns[#conns + 1] = inputBox.FocusLost:Connect(function(enterPressed)
 		if enterPressed then submit() end
 	end)
 	conns[#conns + 1] = continueBtn.Activated:Connect(submit)
-	conns[#conns + 1] = resetBtn.Activated:Connect(resetDevice)
 	conns[#conns + 1] = closeBtn.Activated:Connect(stop)
 
 	conns[#conns + 1] = copyBtn.Activated:Connect(function()
@@ -4691,6 +4855,6 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_18"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_19"
 
 return BananaHub
