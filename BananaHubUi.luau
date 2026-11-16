@@ -13,11 +13,11 @@
     No key system, no roles, no tiers. Everything is local.
 ]]
 
--- BANANAHUB_BUILD_BLACK_12
+-- BANANAHUB_BUILD_BLACK_13
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (the old blue /
 -- see-through build) can never be loaded again.
-local BUILD = "black-12"
+local BUILD = "black-13"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -1633,7 +1633,8 @@ function BananaHub:Window(GuiConfig)
 	GuiFunc.__deviceBadge = DeviceBadge
 
 	-- Only one dropdown list stays open at a time. Each entry is
-	-- { Header = row, List = floating list, Close = fn }.
+	-- { Header = row, List = floating list, Close = fn, RowAt = fn,
+	--   Apply = fn, PickStamp = fn, Reposition = fn }.
 	local OpenDropdowns = {}
 
 	-- Every list the library has created, open or not. A list may only be
@@ -1642,7 +1643,28 @@ function BananaHub:Window(GuiConfig)
 	-- config load, a callback, a resize, a programmatic Set) can leave a list
 	-- hanging open over the page.
 	local AllDropdownLists = {}
-	local function SweepDropdowns()
+
+	-- Every dropdown header, so the click shield can hand a click back to the
+	-- header the player actually aimed at. Without this, switching from one
+	-- open dropdown to another would take two clicks.
+	local AllDropdownHeaders = {}
+
+	-- Everything below is declared here and assigned a little further down,
+	-- because the pieces refer to each other: the shield needs the header list,
+	-- the header list needs the widget factory, and the close helper needs the
+	-- shield. Declaring them up front keeps every reference a real upvalue
+	-- instead of a nil global.
+	local OverlayLayer
+	local ClickShield
+	local UpdateShield
+	local pointInside
+	local pointHit
+	local inputPoints
+	local headerEntryAt
+	local shieldClick
+	local closeAllDropdowns
+
+	local function SweepDropdownsImpl()
 		for _, list in ipairs(AllDropdownLists) do
 			if list and list.Parent and list.Visible then
 				local registered = false
@@ -1655,32 +1677,28 @@ function BananaHub:Window(GuiConfig)
 				if not registered then list.Visible = false end
 			end
 		end
+		UpdateShield()
 	end
 
-	local function closeAllDropdowns()
+	closeAllDropdowns = function()
 		-- Snapshot first: a list's Close also unregisters itself.
 		local open = OpenDropdowns
 		OpenDropdowns = {}
 		for _, entry in ipairs(open) do
 			if type(entry) == "table" and entry.Close then pcall(entry.Close) end
 		end
+		UpdateShield()
 	end
-	GuiFunc.CloseDropdowns = closeAllDropdowns
+	GuiFunc.CloseDropdowns = function() closeAllDropdowns() end
 	-- Also reachable as a top-level call, so a script can close lists without
 	-- knowing about GuiFunc.
-	BananaHub.CloseDropdowns = closeAllDropdowns
-
-	-- Run the sweep whenever the window geometry changes: those are the moments
-	-- a list could be left stranded (a resize, a window open/close). It never
-	-- opens anything.
-	DropShadowHolder:GetPropertyChangedSignal("Size"):Connect(SweepDropdowns)
-	DropShadowHolder:GetPropertyChangedSignal("Visible"):Connect(SweepDropdowns)
+	BananaHub.CloseDropdowns = function() closeAllDropdowns() end
 
 	-- Floating layer for open dropdown lists. With ZIndexBehavior.Sibling a
 	-- child of Main is always drawn above Main's other children, so a list that
 	-- lives here escapes its row, its section and the scrolling frame instead of
 	-- being clipped or painted over by later widgets.
-	local OverlayLayer = Instance.new("Frame")
+	OverlayLayer = Instance.new("Frame")
 	OverlayLayer.Name = "OverlayLayer"
 	OverlayLayer.BackgroundTransparency = 1
 	OverlayLayer.BorderSizePixel = 0
@@ -1689,18 +1707,170 @@ function BananaHub:Window(GuiConfig)
 	OverlayLayer.ZIndex = 500
 	OverlayLayer.Parent = Main
 
-	-- Close an open list when the player clicks anywhere that is not that
-	-- list's own header or its options. This is done by hit-testing instead of
-	-- with an invisible full-panel button: a catcher would swallow the click
-	-- meant for another dropdown's header, and it could not be layered under the
-	-- page anyway (ZIndexBehavior.Sibling always draws a child above its
-	-- parent's siblings, so anything covering the page also covers every
-	-- dropdown header).
-	local function pointInside(gui, x, y)
+	-- See-through click catcher, one ZIndex above the page and below the lists
+	-- (501+). A TextButton is used rather than a Frame because only a GuiButton
+	-- consumes the click that would otherwise fall through to the widget
+	-- underneath the open list. It is fitted over the page area only, so the
+	-- tab sidebar, the title bar and the footer keep working normally.
+	ClickShield = Instance.new("TextButton")
+	ClickShield.Name = "DropdownClickShield"
+	ClickShield.Text = ""
+	ClickShield.Active = true
+	ClickShield.AutoButtonColor = false
+	ClickShield.BackgroundTransparency = 1
+	ClickShield.BorderSizePixel = 0
+	ClickShield.Size = UDim2.new(0, 0, 0, 0)
+	ClickShield.Position = UDim2.new(0, 0, 0, 0)
+	ClickShield.ZIndex = 500
+	ClickShield.Visible = false
+	ClickShield.Parent = OverlayLayer
+
+	pointInside = function(gui, x, y)
 		if not gui or not gui.Visible then return false end
 		local p, s = gui.AbsolutePosition, gui.AbsoluteSize
 		return x >= p.X and x <= p.X + s.X
 			and y >= p.Y and y <= p.Y + s.Y
+	end
+
+	-- True when any of the candidate points falls inside the widget.
+	pointHit = function(gui, points)
+		for _, p in ipairs(points) do
+			if pointInside(gui, p[1], p[2]) then return true end
+		end
+		return false
+	end
+
+	-- Turn a raw input into the coordinate space AbsolutePosition lives in.
+	-- GetMouseLocation and a touch's raw Position do not agree about the top-bar
+	-- inset across clients, so both readings are offered and callers accept
+	-- whichever one lands. That is cheaper and far more reliable than betting on
+	-- one convention and having the whole hit test miss on some devices.
+	inputPoints = function(input)
+		local points = {}
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			local loc = UserInputService:GetMouseLocation()
+			points[1] = {loc.X, loc.Y}
+		else
+			local inset = GuiService:GetGuiInset()
+			points[1] = {input.Position.X, input.Position.Y - inset.Y}
+			points[2] = {input.Position.X, input.Position.Y}
+		end
+		return points
+	end
+
+	-- True only when the widget and every GuiObject ancestor up to Main are
+	-- visible. A header on a tab that is not the current page is still a
+	-- descendant of Main and still has coordinates, so position alone is not
+	-- enough to know the player can actually see it. Folders in the chain (the
+	-- tab pages live in one) have no Visible property, so they are skipped.
+	local function onScreen(gui)
+		local node = gui
+		while node and node ~= Main do
+			if node:IsA("GuiObject") and not node.Visible then return false end
+			node = node.Parent
+		end
+		return node == Main
+	end
+
+	UpdateShield = function()
+		if not ClickShield then return end
+		-- Read the real state of the lists rather than the registry: the two are
+		-- updated in a different order when a list opens or closes, and this way
+		-- the answer is always correct.
+		local anyOpen = false
+		for _, list in ipairs(AllDropdownLists) do
+			if list and list.Parent and list.Visible then
+				anyOpen = true
+				break
+			end
+		end
+
+		if not anyOpen then
+			ClickShield.Visible = false
+			return
+		end
+
+		-- Cover the page area only. The tab sidebar, the title bar and the
+		-- footer stay clickable: they are not under a list, and covering them
+		-- would make tab switching take two clicks.
+		local origin = OverlayLayer.AbsolutePosition
+		local pos = Layers.AbsolutePosition
+		local size = Layers.AbsoluteSize
+		ClickShield.Position = UDim2.fromOffset(pos.X - origin.X, pos.Y - origin.Y)
+		ClickShield.Size = UDim2.fromOffset(size.X, size.Y)
+		ClickShield.Visible = true
+	end
+
+	-- Which dropdown header, if any, sits under one of these points. Only
+	-- headers on the page the player is looking at count, so a stale header on
+	-- a hidden tab can never answer for the visible one. Each record is
+	-- { Frame = the row, Toggle = fn that opens or closes that one list }.
+	headerEntryAt = function(points)
+		local current = LayersPageLayout.CurrentPage
+		for _, record in ipairs(AllDropdownHeaders) do
+			local frame = record and record.Frame
+			if frame and frame.Parent and frame:IsDescendantOf(Main)
+				and onScreen(frame) and pointHit(frame, points)
+				and (not current or frame:IsDescendantOf(current)) then
+				return record
+			end
+		end
+		return nil
+	end
+
+	-- The shield sits just under the lists and just over the page, so a pick can
+	-- never be stolen by the Button underneath the open list. Its own click
+	-- closes the list, and if the click was really aimed at a dropdown header
+	-- that header is opened for the player, so moving from one dropdown to
+	-- another stays a single click.
+	shieldClick = function(points)
+		-- A press on the open list belongs to the list, whatever the hit test
+		-- says; closing here would swallow the pick.
+		for _, entry in ipairs(OpenDropdowns) do
+			if type(entry) == "table" and pointHit(entry.List, points) then return end
+		end
+
+		local record = headerEntryAt(points)
+		local frame = record and record.Frame
+		-- Clicking the header of the list that is already open means "close it",
+		-- so that one is closed without being reopened.
+		local wasOpen = false
+		for _, entry in ipairs(OpenDropdowns) do
+			if type(entry) == "table" and entry.Header == frame then
+				wasOpen = true
+				break
+			end
+		end
+		closeAllDropdowns()
+		if record and not wasOpen and type(record.Toggle) == "function" then
+			pcall(record.Toggle)
+		end
+	end
+
+	ClickShield.InputBegan:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		-- Press only. Handling the release too (Activated) would run this twice:
+		-- the first pass would open a dropdown header and the second would
+		-- immediately close it again.
+		shieldClick(inputPoints(input))
+	end)
+
+	-- Press/release fallback for option rows. The row buttons normally handle
+	-- their own clicks, but a click that lands on a widget drawn under the list
+	-- used to be able to take the pick away. Recording the row on press and
+	-- completing it on release makes the pick land either way, and the row's own
+	-- handler and this one cannot both run: `PickStamp` changes as soon as a
+	-- choice is applied.
+	local PressedRow = nil
+	local function rowEntryUnder(points)
+		for _, entry in ipairs(OpenDropdowns) do
+			if type(entry) == "table" and type(entry.RowAt) == "function" then
+				local row = entry.RowAt(points)
+				if row then return entry, row end
+			end
+		end
+		return nil
 	end
 
 	UserInputService.InputBegan:Connect(function(input)
@@ -1708,29 +1878,107 @@ function BananaHub:Window(GuiConfig)
 		if input.UserInputType ~= Enum.UserInputType.MouseButton1
 			and input.UserInputType ~= Enum.UserInputType.Touch then return end
 
-		-- GetMouseLocation is inset-adjusted, which is the same space
-		-- GuiObject.AbsolutePosition uses. A touch reports raw screen pixels,
-		-- so the top-bar inset is subtracted to match.
-		local points = {}
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
-			points[1] = UserInputService:GetMouseLocation()
-		else
-			local inset = GuiService:GetGuiInset()
-			points[1] = Vector2.new(input.Position.X, input.Position.Y - inset.Y)
-			points[2] = Vector2.new(input.Position.X, input.Position.Y)
+		local points = inputPoints(input)
+
+		-- Every new press starts a fresh pick attempt; a stale record from an
+		-- earlier click must never be completed by this one's release.
+		PressedRow = nil
+
+		-- Pressing an option row: remember it (and its rectangle, which stays
+		-- valid even if the list is closed before the release) and leave the
+		-- list alone. The list owns this click.
+		local entry, row = rowEntryUnder(points)
+		if entry and row then
+			local p, s = row.frame.AbsolutePosition, row.frame.AbsoluteSize
+			PressedRow = {
+				entry = entry,
+				row = row,
+				stamp = entry.PickStamp(),
+				x1 = p.X,
+				y1 = p.Y,
+				x2 = p.X + s.X,
+				y2 = p.Y + s.Y,
+			}
+			return
 		end
 
+		-- Never close on a press that lands on the open list itself (its padding,
+		-- a scrollbar) - that click belongs to the list.
 		for _, entry in ipairs(OpenDropdowns) do
-			if type(entry) == "table" then
-				for _, p in ipairs(points) do
-					if pointInside(entry.Header, p.X, p.Y) or pointInside(entry.List, p.X, p.Y) then
-						return
-					end
-				end
-			end
+			if type(entry) == "table" and pointHit(entry.List, points) then return end
 		end
+
+		-- Inside the page area the click shield (a real GuiButton over the page)
+		-- decides what happens. Closing here as well would hide the list before
+		-- the shield could hand the click to another dropdown header. If the
+		-- shield is somehow not up, this path closes the list instead so a click
+		-- on the page can never leave a list stranded.
+		if ClickShield and ClickShield.Visible and pointHit(Layers, points) then
+			return
+		end
+
+		-- Anywhere else - the sidebar, the title bar, the footer, the game -
+		-- closes the list.
 		closeAllDropdowns()
 	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		local pressed = PressedRow
+		PressedRow = nil
+		if not pressed then return end
+
+		-- Releasing somewhere other than the row that was pressed is a drag or
+		-- a scroll, not a pick.
+		local inside = false
+		for _, p in ipairs(inputPoints(input)) do
+			local x, y = p[1], p[2]
+			if x >= pressed.x1 and x <= pressed.x2
+				and y >= pressed.y1 and y <= pressed.y2 then
+				inside = true
+				break
+			end
+		end
+		if not inside then return end
+
+		-- The row's own button already applied this choice.
+		if pressed.entry.PickStamp() ~= pressed.stamp then return end
+
+		-- The list must not have been replaced by a different one in the
+		-- meantime: applying a row from a list that is no longer the open one
+		-- would change an unrelated dropdown.
+		for _, entry in ipairs(OpenDropdowns) do
+			if type(entry) == "table" and entry.List ~= pressed.entry.List
+				and entry.List and entry.List.Visible then
+				return
+			end
+		end
+
+		pcall(pressed.entry.Apply, pressed.row, true)
+	end)
+
+	-- Moving or resizing the window would leave a list behind at its old spot.
+	local function repositionAll()
+		for _, entry in ipairs(OpenDropdowns) do
+			if type(entry) == "table" and entry.List and entry.List.Visible
+				and type(entry.Reposition) == "function" then
+				pcall(entry.Reposition)
+			end
+		end
+		UpdateShield()
+	end
+
+	-- Run the sweep whenever the window geometry changes: those are the moments
+	-- a list could be left stranded (a resize, a window open/close). It never
+	-- opens anything. The absolute-position hooks keep an open list glued to its
+	-- row while the window is dragged, and are pcall'd because a signal that
+	-- does not exist in this client must not take the whole UI down.
+	DropShadowHolder:GetPropertyChangedSignal("Size"):Connect(SweepDropdownsImpl)
+	DropShadowHolder:GetPropertyChangedSignal("Visible"):Connect(SweepDropdownsImpl)
+	pcall(function() Main:GetPropertyChangedSignal("AbsoluteSize"):Connect(repositionAll) end)
+	pcall(function() Main:GetPropertyChangedSignal("AbsolutePosition"):Connect(repositionAll) end)
+	pcall(function() Layers:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() UpdateShield() end) end)
 
 	-- ---------------------------------------------------------------
 	-- Icon lookup
@@ -2603,6 +2851,50 @@ function BananaHub:Window(GuiConfig)
 				-- row click handlers close the list after a pick.
 				local closeList, openList
 
+				-- A pick runs the widget's Set, which fires the feature and
+				-- closes the list. `pickCount` stops the press/release fallback
+				-- below from running the same choice twice: it is a counter, not
+				-- a timestamp, so two deliveries in the same instant still differ.
+				local pickCount = 0
+				local function applyRow(row, force)
+					if not row then return end
+					-- The list closes on the first pick, so a second delivery of
+					-- the same click (the row button's Activated plus the
+					-- press/release fallback) finds it shut and does nothing.
+					-- `force` is used by the fallback when its stamp proves
+					-- nothing has been applied yet - the list may have been shut
+					-- mid-press by something else, and the choice must still land.
+					if not force and not OptionList.Visible then return end
+					pickCount = pickCount + 1
+					if multi then
+						local list = DropdownFunc.Value or {}
+						local at = table.find(list, row.value)
+						if at then
+							table.remove(list, at)
+						else
+							list[#list + 1] = row.value
+						end
+						DropdownFunc:Set(list)
+					else
+						DropdownFunc:Set(row.value)
+					end
+					-- Picking an option EXECUTES the choice, so the list closes
+					-- every time - single or multi.
+					closeList()
+				end
+
+				-- Which option row is under one of these points. Used by the
+				-- window's press/release fallback so a pick still lands when the
+				-- row's own button never sees the click.
+				local function rowAt(points)
+					if not OptionList.Visible then return nil end
+					if not pointHit(OptionList, points) then return nil end
+					for _, row in ipairs(rows) do
+						if pointHit(row.frame, points) then return row end
+					end
+					return nil
+				end
+
 				local function summary()
 					if multi then
 						local picked = {}
@@ -2679,27 +2971,12 @@ function BananaHub:Window(GuiConfig)
 						rowLabel.Name = "OptionText"
 						rowLabel.Parent = rowFrame
 
-						rowButton.Activated:Connect(function()
-							if multi then
-								local list = DropdownFunc.Value or {}
-								local at = table.find(list, value)
-								if at then
-									table.remove(list, at)
-								else
-									list[#list + 1] = value
-								end
-								DropdownFunc:Set(list)
-							else
-								DropdownFunc:Set(value)
-							end
-							-- Picking an option EXECUTES the choice, so the list
-							-- closes every time - single or multi. Leaving it
-							-- open meant it hovered over the row it belonged to
-							-- and over the buttons underneath.
-							closeList()
-						end)
+						local rowRecord = {frame = rowFrame, label = rowLabel, value = value}
+						rows[#rows + 1] = rowRecord
 
-						rows[#rows + 1] = {frame = rowFrame, label = rowLabel, value = value}
+						rowButton.Activated:Connect(function()
+							applyRow(rowRecord)
+						end)
 					end
 
 					expandedHeight = math.min(#DropdownFunc.Options, isCompact() and 6 or 9) * (isCompact() and 38 or 26) + 8
@@ -2721,6 +2998,7 @@ function BananaHub:Window(GuiConfig)
 							table.remove(OpenDropdowns, i)
 						end
 					end
+					UpdateShield()
 				end
 
 				-- `userOpening` is set only by a real click on this row's header.
@@ -2765,23 +3043,35 @@ function BananaHub:Window(GuiConfig)
 					reposition()
 					OptionList.CanvasSize = UDim2.new(0, 0, 0, 0)
 					OptionList.Visible = true
+					UpdateShield()
 				end
 
 				-- HARD GUARD. The instant this list becomes visible it must
 				-- already be registered as click-opened, or it is hidden again.
 				-- This is what makes "auto open" impossible: registration only
-				-- happens inside the click handler below.
+				-- happens inside the click handler below. The shield is refreshed
+				-- on every change in either direction, because a script outside
+				-- the library (the Soreya dropdown guard) can also hide a list by
+				-- setting Visible directly, and a shield left up would block the
+				-- whole page.
 				OptionList:GetPropertyChangedSignal("Visible"):Connect(function()
-					if not OptionList.Visible then return end
+					if not OptionList.Visible then
+						UpdateShield()
+						return
+					end
 					for _, entry in ipairs(OpenDropdowns) do
 						if type(entry) == "table" and entry.List == OptionList then
+							UpdateShield()
 							return
 						end
 					end
 					OptionList.Visible = false
+					UpdateShield()
 				end)
 
-				DropdownButton.Activated:Connect(function()
+				-- One place that opens or closes this list, shared by the header's
+				-- own click and by the window's click shield.
+				local function toggleList()
 					if locked then return end
 
 					-- If THIS list is already open, the click closes it. Checking
@@ -2801,11 +3091,24 @@ function BananaHub:Window(GuiConfig)
 						Header = Dropdown,
 						List = OptionList,
 						Close = closeList,
+						Reposition = reposition,
+						RowAt = rowAt,
+						Apply = applyRow,
+						PickStamp = function() return pickCount end,
 					}
 					userOpening = true
 					openList()
 					userOpening = false
-				end)
+				end
+
+				DropdownButton.Activated:Connect(toggleList)
+
+				-- The shield finds this header by position and calls Toggle, so a
+				-- click on a second dropdown while one is open opens it at once.
+				AllDropdownHeaders[#AllDropdownHeaders + 1] = {
+					Frame = Dropdown,
+					Toggle = toggleList,
+				}
 
 				function DropdownFunc:Set(v, silent)
 					if multi then
@@ -3232,6 +3535,6 @@ function BananaHub:SetTheme() end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_12"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_13"
 
 return BananaHub
