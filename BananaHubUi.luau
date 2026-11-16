@@ -13,11 +13,12 @@
     No key system, no roles, no tiers. Everything is local.
 ]]
 
--- BANANAHUB_BUILD_BLACK_13
+-- BANANAHUB_BUILD_BLACK_14
 -- Build marker. The Soreya scripts look for this exact string before they
--- accept a copy of this library, so a stale workspace cache (the old blue /
--- see-through build) can never be loaded again.
-local BUILD = "black-13"
+-- accept a copy of this library, so a stale workspace cache (or the previous
+-- build, whose GUI was parented into CoreGui where the game could see it) can
+-- never be loaded again.
+local BUILD = "black-14"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -28,6 +29,36 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
 local viewport = workspace.CurrentCamera.ViewportSize
+
+-- Where the interface actually lives.
+--
+-- gethui() is the executor's hidden container: it is not a child of CoreGui or of
+-- PlayerGui, so a game-side script walking those trees cannot see the window at
+-- all. Rayfield and every other hub use it for exactly that reason.
+--
+-- CoreGui is the fallback for an executor without gethui, and PlayerGui the last
+-- resort. Both are visible to the game, which is why they are only fallbacks.
+local HIDDEN_PARENT = nil
+do
+	local ok, hui = pcall(function()
+		if type(gethui) == "function" then return gethui() end
+		return nil
+	end)
+	if ok and hui then
+		HIDDEN_PARENT = hui
+	else
+		HIDDEN_PARENT = CoreGui
+	end
+end
+
+-- Parent a ScreenGui where the game cannot see it.
+local function MountGui(gui)
+	local ok = pcall(function() gui.Parent = HIDDEN_PARENT end)
+	if ok and gui.Parent then return true end
+	ok = pcall(function() gui.Parent = CoreGui end)
+	if ok and gui.Parent then return true end
+	return pcall(function() gui.Parent = LocalPlayer:WaitForChild("PlayerGui", 10) end)
+end
 
 local CONFIG_FOLDER = "BananaHub/Config/"
 
@@ -499,15 +530,24 @@ function BananaHub:MakeNotify(NotifyConfig)
 	local NotifyFunction = {}
 
 	task.spawn(function()
-		if not CoreGui:FindFirstChild("NotifyGui") then
+		-- Notifications live in the same hidden container as the window, so a
+		-- game-side script walking CoreGui sees neither.
+		local NotifyRoot = HIDDEN_PARENT
+		local existing = NotifyRoot:FindFirstChild("NotifyGui")
+		if not existing then
 			local NotifyGui = Instance.new("ScreenGui")
 			NotifyGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 			NotifyGui.Name = "NotifyGui"
 			NotifyGui.ResetOnSpawn = false
-			NotifyGui.Parent = CoreGui
+			local okMount = pcall(function() NotifyGui.Parent = NotifyRoot end)
+			if not okMount or not NotifyGui.Parent then
+				pcall(function() NotifyGui.Parent = CoreGui end)
+			end
+			existing = NotifyGui
 		end
 
-		if not CoreGui.NotifyGui:FindFirstChild("NotifyLayout") then
+		local NotifyGuiRef = existing
+		if not NotifyGuiRef:FindFirstChild("NotifyLayout") then
 			local NotifyLayout = Instance.new("Frame")
 			NotifyLayout.AnchorPoint = Vector2.new(1, 1)
 			NotifyLayout.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
@@ -516,11 +556,11 @@ function BananaHub:MakeNotify(NotifyConfig)
 			NotifyLayout.Position = UDim2.new(1, -30, 1, -30)
 			NotifyLayout.Size = UDim2.new(0, 320, 1, 0)
 			NotifyLayout.Name = "NotifyLayout"
-			NotifyLayout.Parent = CoreGui.NotifyGui
+			NotifyLayout.Parent = NotifyGuiRef
 
-			CoreGui.NotifyGui.NotifyLayout.ChildRemoved:Connect(function()
+			NotifyGuiRef.NotifyLayout.ChildRemoved:Connect(function()
 				local Count = 0
-				for _, v in ipairs(CoreGui.NotifyGui.NotifyLayout:GetChildren()) do
+				for _, v in ipairs(NotifyGuiRef.NotifyLayout:GetChildren()) do
 					TweenService:Create(
 						v,
 						TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
@@ -532,7 +572,7 @@ function BananaHub:MakeNotify(NotifyConfig)
 		end
 
 		local NotifyPosHeigh = 0
-		for _, v in ipairs(CoreGui.NotifyGui.NotifyLayout:GetChildren()) do
+		for _, v in ipairs(NotifyGuiRef.NotifyLayout:GetChildren()) do
 			NotifyPosHeigh = -(v.Position.Y.Offset) + v.Size.Y.Offset + 12
 		end
 
@@ -553,7 +593,7 @@ function BananaHub:MakeNotify(NotifyConfig)
 		NotifyFrame.BackgroundTransparency = 1
 		NotifyFrame.Size = UDim2.new(1, 0, 0, 150)
 		NotifyFrame.Name = "NotifyFrame"
-		NotifyFrame.Parent = CoreGui.NotifyGui.NotifyLayout
+		NotifyFrame.Parent = NotifyGuiRef.NotifyLayout
 		NotifyFrame.AnchorPoint = Vector2.new(0, 1)
 		NotifyFrame.Position = UDim2.new(0, 0, 1, -NotifyPosHeigh)
 
@@ -999,10 +1039,7 @@ function BananaHub:Window(GuiConfig)
 	BananaHubGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	BananaHubGui.Name = "BananaHub"
 	BananaHubGui.ResetOnSpawn = false
-	local okParent = pcall(function() BananaHubGui.Parent = CoreGui end)
-	if not okParent then
-		pcall(function() BananaHubGui.Parent = LocalPlayer:WaitForChild("PlayerGui", 10) end)
-	end
+	MountGui(BananaHubGui)
 
 	DropShadowHolder.BackgroundTransparency = 1
 	DropShadowHolder.BorderSizePixel = 0
@@ -3535,6 +3572,6 @@ function BananaHub:SetTheme() end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_13"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_14"
 
 return BananaHub
