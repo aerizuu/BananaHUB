@@ -13,11 +13,11 @@
     No key system, no roles, no tiers. Everything is local.
 ]]
 
--- BANANAHUB_BUILD_BLACK_17
+-- BANANAHUB_BUILD_BLACK_18
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (or an earlier
 -- build, which had no floating open icon) can never be loaded again.
-local BUILD = "black-17"
+local BUILD = "black-18"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -3923,8 +3923,774 @@ end
 
 function BananaHub:SetTheme() end
 
+--───────────────────────────────────────────────────────────────────────────
+-- PREMIUM KEY GATE
+--
+-- One key, one device. The gate asks the key site over HTTP on EVERY run, so
+-- revoking or expiring a key takes effect immediately instead of being cached
+-- forever on the client. The script never decides by itself that a key is
+-- good.
+--
+-- Endpoints expected (POST, JSON in, JSON out):
+--
+--   /api/validate   { key, hwid }  -> { ok, code, message, plan, expiresAt }
+--   /api/claim      { key, hwid }  -> binds the key to this device
+--   /api/reset-hwid { key }        -> unbinds, limited to 1x per 24h
+--
+-- `code` values the UI reacts to: OK, UNCLAIMED, KEY_NOT_FOUND, KEY_REVOKED,
+-- KEY_EXPIRED, HWID_MISMATCH, RESET_COOLDOWN.
+--
+-- Usage (premium script, before any feature code runs):
+--
+--     local ok, info = WindUI:KeyGate({
+--         SiteURL = "https://banana-steel.vercel.app",
+--         Product = "Banana Hub Premium",
+--     })
+--     if not ok then return end
+--
+-- `info` on success: { key, plan, planLabel, expiresAt, lifetime }
+--───────────────────────────────────────────────────────────────────────────
+BananaHub.KeyAPI = {
+	BaseURL      = "https://banana-steel.vercel.app",
+	ValidatePath = "/api/validate",
+	ClaimPath    = "/api/claim",
+	ResetPath    = "/api/reset-hwid",
+	Timeout      = 12,
+}
+
+-- Stable per-device id, cached for the session. Executors expose different
+-- sources, so try each in order of quality: a real hardware id first, then
+-- Roblox's own client id, then the account id (which still enforces one key
+-- per user, just not one per machine).
+function BananaHub.GetHWID()
+	if BananaHub._hwid then return BananaHub._hwid end
+
+	local raw
+	if type(gethwid) == "function" then
+		local ok, v = pcall(gethwid)
+		if ok and type(v) == "string" and #v > 0 then raw = v end
+	end
+	if not raw then
+		local ok, v = pcall(function()
+			return game:GetService("RbxAnalyticsService"):GetClientId()
+		end)
+		if ok and type(v) == "string" and #v > 0 then raw = v end
+	end
+	if not raw then
+		local lp = Players.LocalPlayer
+		raw = lp and ("USERID-" .. tostring(lp.UserId)) or "UNKNOWN"
+	end
+
+	-- The server only accepts [A-Z0-9:_-.] so normalise here rather than have a
+	-- legitimate device rejected for a stray character.
+	local clean = tostring(raw):upper():gsub("[^A-Z0-9:_%-%.]", "")
+	if clean == "" then clean = "UNKNOWN" end
+	if #clean > 96 then clean = clean:sub(1, 96) end
+
+	BananaHub._hwid = clean
+	return clean
+end
+
+function BananaHub:KeyGate(opts)
+	opts = opts or {}
+
+	local API       = BananaHub.KeyAPI
+	local siteURL   = tostring(opts.SiteURL or API.BaseURL)
+	local product   = tostring(opts.Product or "Banana Hub Premium")
+	local alwaysAsk = opts.AlwaysAsk == true
+	local saveFile  = tostring(opts.SaveFile or "BananaHubPremiumKey.txt")
+	local hwid      = BananaHub.GetHWID()
+
+	local C_BG      = Color3.fromRGB(8, 8, 8)
+	local C_SURFACE = Color3.fromRGB(20, 20, 20)
+	local C_TEXT    = Color3.fromRGB(235, 235, 235)
+	local C_MUTED   = Color3.fromRGB(140, 140, 140)
+	local C_GOLD    = Color3.fromRGB(255, 196, 61)
+	local C_OK      = Color3.fromRGB(150, 225, 150)
+	local C_ERR     = Color3.fromRGB(255, 110, 110)
+
+	-- HttpPost can hang on a dead connection, and this runs before the window
+	-- exists, so the prompt must never be blocked by it. Bound the wait and
+	-- treat a timeout as "server unreachable".
+	local function post(path, payload)
+		local url = siteURL .. path
+		local body = HttpService:JSONEncode(payload)
+		local done, text = false, nil
+
+		-- Executors expose the HTTP function under different names, and not all
+		-- of them are guaranteed to work in every game. Try each in turn and
+		-- fall back to the engine's own HttpPost, which works whenever the site
+		-- is on the game's allowlist.
+		local function send()
+			local fns = {}
+			if type(request) == "function" then fns[#fns + 1] = request end
+			if type(http) == "table" and type(http.request) == "function" then
+				fns[#fns + 1] = http.request
+			end
+			if type(syn) == "table" and type(syn.request) == "function" then
+				fns[#fns + 1] = syn.request
+			end
+
+			for _, fn in ipairs(fns) do
+				local ok, r = pcall(fn, {
+					Url = url,
+					Method = "POST",
+					Headers = { ["Content-Type"] = "application/json" },
+					Body = body,
+				})
+				if ok and type(r) == "table" then
+					local b = r.Body or r.body
+					if type(b) == "string" and #b > 0 then return b end
+				end
+			end
+
+			local ok, res = pcall(function()
+				return game:HttpPost(url, body, "Application/JSON", true)
+			end)
+			if ok and type(res) == "string" and #res > 0 then return res end
+			return nil
+		end
+
+		task.spawn(function()
+			text = send()
+			done = true
+		end)
+
+		local waited = 0
+		while not done and waited < (API.Timeout or 12) do
+			task.wait(0.1)
+			waited = waited + 0.1
+		end
+		if not done or not text then return nil, "Cannot reach the key server." end
+
+		local okDecode, decoded = pcall(function() return HttpService:JSONDecode(text) end)
+		if not okDecode or type(decoded) ~= "table" then
+			return nil, "The key server sent an unreadable reply."
+		end
+		return decoded, nil
+	end
+
+	-- The gate does not require the site to use one exact JSON shape. Your
+	-- backend may answer { ok, code }, { success, valid }, { status: "ok" }, or
+	-- wrap the result in { data: {...} } - all of those mean the same thing, so
+	-- normalise them into one canonical form here rather than making the site
+	-- match this file.
+	local function normalize(raw)
+		if type(raw) ~= "table" then return nil end
+		-- Unwrap a single "data"/"result"/"body" envelope.
+		local r = raw
+		if type(r.data) == "table" and r.ok == nil and r.success == nil then
+			r = r.data
+		elseif type(r.result) == "table" and r.ok == nil and r.success == nil then
+			r = r.result
+		end
+
+		local okFlag = r.ok
+		if okFlag == nil then okFlag = r.success end
+		if okFlag == nil then okFlag = r.valid end
+		if okFlag == nil and type(r.status) == "string" then
+			local s = r.status:lower()
+			okFlag = (s == "ok" or s == "valid" or s == "success" or s == "active")
+		end
+		-- JSONDecode gives real booleans, but a backend that stringifies them
+		-- would otherwise read "false" as truthy and let everyone in.
+		if type(okFlag) == "string" then
+			local s = okFlag:lower()
+			okFlag = (s == "true" or s == "ok" or s == "1" or s == "yes")
+		elseif type(okFlag) == "number" then
+			okFlag = okFlag ~= 0
+		end
+		if okFlag ~= true then okFlag = false end
+
+		local code = r.code or r.error or r.status
+		code = type(code) == "string" and code:upper() or nil
+		-- Some backends report a boolean plus a free-text reason instead of a
+		-- code; derive the code the UI branches on from the text.
+		if not code then
+			local msg = tostring(r.message or r.reason or r.msg or ""):lower()
+			if msg:find("expired") then code = "KEY_EXPIRED"
+			elseif msg:find("revoked") then code = "KEY_REVOKED"
+			elseif msg:find("another device") or msg:find("hwid") then code = "HWID_MISMATCH"
+			elseif msg:find("not found") or msg:find("invalid") then code = "KEY_NOT_FOUND"
+			-- Only a SUCCESSFUL reply can mean "valid but unbound". A failed
+			-- reply whose text happens to mention claiming is a rejection, not an
+			-- invitation to run the claim step.
+			elseif okFlag and (msg:find("claim") or msg:find("not linked") or msg:find("bind")) then
+				code = "UNCLAIMED"
+			else code = okFlag and "OK" or "KEY_NOT_FOUND"
+			end
+		end
+
+		-- The UI only branches on OK / UNCLAIMED / HWID_MISMATCH and treats
+		-- everything else as a rejection, so fold the equivalent spellings into
+		-- the canonical set. Without this, a site answering { code = "VALID" }
+		-- would pass validation but never hit the saved-key fast path and the
+		-- prompt would reappear on every single run.
+		if code == "VALID" or code == "SUCCESS" or code == "ACTIVE"
+			or code == "TRUE" or code == "200" then
+			code = "OK"
+		elseif code == "INVALID" or code == "FALSE" or code == "ERROR"
+			or code == "FAIL" or code == "DENIED" then
+			code = "KEY_NOT_FOUND"
+		end
+		-- A key that validated but is not linked to this device must still go
+		-- through the claim step, whatever spelling the site used for it.
+		if code == "NOT_CLAIMED" or code == "UNBOUND" or code == "NOT_BOUND"
+			or code == "NO_HWID" then
+			code = "UNCLAIMED"
+		end
+
+		-- "OK" with no device bound yet is reported by the site as a separate
+		-- flag in some shapes; honour it so an unclaimed key always goes through
+		-- the claim step. Accepts real booleans and their string spellings.
+		local function isFalse(v)
+			return v == false or v == "false" or v == 0 or v == "0"
+		end
+		if okFlag and (isFalse(r.claimed) or isFalse(r.bound)
+			or isFalse(r.hwidBound) or (r.hwid == nil and r.needsClaim == true)) then
+			code = "UNCLAIMED"
+		end
+
+		return {
+			ok = okFlag and true or false,
+			code = code,
+			message = r.message or r.reason or r.msg or r.error_description,
+			plan = r.plan,
+			planLabel = r.planLabel or r.plan_label,
+			expiresAt = r.expiresAt or r.expires_at or r.expiry,
+			-- Never infer lifetime from a missing expiry: a backend that simply
+			-- does not echo the expiry for a 24h key would otherwise be shown as
+			-- a permanent key. Only an explicit flag or a "lifetime" plan counts.
+			lifetime = r.lifetime == true
+				or r.isLifetime == true
+				or tostring(r.plan or ""):lower():find("lifetime") ~= nil
+				or tostring(r.planLabel or r.plan_label or ""):lower():find("lifetime") ~= nil,
+		}
+	end
+
+	-- Every caller gets the canonical shape, so submit/resetDevice never have to
+	-- know which JSON dialect the site answered in. Declared after normalize
+	-- because it calls it - a forward reference here would be nil at call time.
+	local function postJSON(path, payload)
+		local raw, err = post(path, payload)
+		if not raw then return nil, err end
+		local canon = normalize(raw)
+		if not canon then return nil, "The key server sent an unreadable reply." end
+		return canon, nil
+	end
+
+	local function readSaved()
+		if not readfile then return nil end
+		local ok, data = pcall(readfile, saveFile)
+		if ok and type(data) == "string" then
+			local v = data:gsub("%s+", "")
+			if v ~= "" then return v end
+		end
+		return nil
+	end
+
+	local function writeSaved(k)
+		if not writefile then return end
+		pcall(function() writefile(saveFile, tostring(k)) end)
+	end
+
+	local function infoOf(res, key)
+		return {
+			key       = key,
+			plan      = res and res.plan,
+			planLabel = res and res.planLabel,
+			expiresAt = res and res.expiresAt,
+			lifetime  = res and res.lifetime,
+		}
+	end
+
+	-- Fast path: a remembered key that the server still accepts gets in with no
+	-- prompt at all. Requires code == "OK" rather than just ok=true, so a key
+	-- that is valid but not yet bound to this device still goes through the
+	-- prompt and gets claimed.
+	if not alwaysAsk then
+		local saved = readSaved()
+		if saved then
+			local res = postJSON(API.ValidatePath, { key = saved, hwid = hwid })
+			if res and res.ok and res.code == "OK" then
+				return true, infoOf(res, saved)
+			end
+		end
+	end
+
+	-- Re-running the script while a prompt is still up would stack a second
+	-- prompt on top of the first, and the older one would sit there forever
+	-- waiting for input nobody can reach. Close the stale one first; its wait
+	-- loop exits as soon as its gui is gone. Every possible mount target is
+	-- checked because MountGui falls back when gethui() is unavailable.
+	pcall(function()
+		local targets = { HIDDEN_PARENT, CoreGui }
+		local pg = LocalPlayer and LocalPlayer:FindFirstChild("PlayerGui")
+		if pg then targets[#targets + 1] = pg end
+		for _, t in ipairs(targets) do
+			local stale = t and t:FindFirstChild("BananaHubKey")
+			if stale then stale:Destroy() end
+		end
+	end)
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "BananaHubKey"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 1000000
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	MountGui(gui)
+
+	local backdrop = Instance.new("Frame")
+	backdrop.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	backdrop.BackgroundTransparency = 0.45
+	backdrop.BorderSizePixel = 0
+	backdrop.Size = UDim2.fromScale(1, 1)
+	backdrop.ZIndex = 1
+	backdrop.Parent = gui
+
+	local panel = Instance.new("Frame")
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.Size = UDim2.fromOffset(360, 300)
+	panel.BackgroundColor3 = C_BG
+	panel.BorderSizePixel = 0
+	panel.ZIndex = 2
+	panel.Parent = gui
+
+	local panelCorner = Instance.new("UICorner")
+	panelCorner.CornerRadius = UDim.new(0, 10)
+	panelCorner.Parent = panel
+
+	local panelStroke = Instance.new("UIStroke")
+	panelStroke.Color = Color3.fromRGB(255, 255, 255)
+	panelStroke.Transparency = 0.82
+	panelStroke.Thickness = 1
+	panelStroke.Parent = panel
+
+	local logo = Instance.new("ImageLabel")
+	logo.BackgroundTransparency = 1
+	logo.Image = "rbxassetid://125326185088678"
+	logo.Position = UDim2.new(0, 16, 0, 14)
+	logo.Size = UDim2.fromOffset(28, 28)
+	logo.ZIndex = 4
+	logo.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBold
+	title.Text = "BANANA HUB"
+	title.TextColor3 = C_TEXT
+	title.TextSize = 14
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Position = UDim2.new(0, 54, 0, 13)
+	title.Size = UDim2.new(1, -110, 0, 16)
+	title.ZIndex = 4
+	title.Parent = panel
+
+	local subtitle = Instance.new("TextLabel")
+	subtitle.BackgroundTransparency = 1
+	subtitle.Font = Enum.Font.Gotham
+	subtitle.Text = string.upper(product) .. "  -  KEY REQUIRED"
+	subtitle.TextColor3 = C_GOLD
+	subtitle.TextSize = 10
+	subtitle.TextXAlignment = Enum.TextXAlignment.Left
+	subtitle.Position = UDim2.new(0, 54, 0, 30)
+	subtitle.Size = UDim2.new(1, -110, 0, 12)
+	subtitle.ZIndex = 4
+	subtitle.Parent = panel
+
+	local closeBtn = Instance.new("TextButton")
+	closeBtn.AutoButtonColor = false
+	closeBtn.BackgroundTransparency = 1
+	closeBtn.Font = Enum.Font.GothamBold
+	closeBtn.Text = "X"
+	closeBtn.TextColor3 = C_MUTED
+	closeBtn.TextSize = 13
+	closeBtn.AnchorPoint = Vector2.new(1, 0)
+	closeBtn.Position = UDim2.new(1, -12, 0, 14)
+	closeBtn.Size = UDim2.fromOffset(22, 22)
+	closeBtn.ZIndex = 5
+	closeBtn.Parent = panel
+
+	local divider = Instance.new("Frame")
+	divider.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	divider.BorderSizePixel = 0
+	divider.Position = UDim2.new(0, 16, 0, 56)
+	divider.Size = UDim2.new(1, -32, 0, 1)
+	divider.ZIndex = 3
+	divider.Parent = panel
+
+	-- Device id, shown read-only so the user can copy it into the site if they
+	-- ever need to prove which machine they are on.
+	local hwidLabel = Instance.new("TextLabel")
+	hwidLabel.BackgroundTransparency = 1
+	hwidLabel.Font = Enum.Font.Gotham
+	hwidLabel.Text = "THIS DEVICE (HWID)"
+	hwidLabel.TextColor3 = C_MUTED
+	hwidLabel.TextSize = 10
+	hwidLabel.TextXAlignment = Enum.TextXAlignment.Left
+	hwidLabel.Position = UDim2.new(0, 16, 0, 66)
+	hwidLabel.Size = UDim2.new(1, -100, 0, 12)
+	hwidLabel.ZIndex = 4
+	hwidLabel.Parent = panel
+
+	local copyBtn = Instance.new("TextButton")
+	copyBtn.AutoButtonColor = false
+	copyBtn.BackgroundTransparency = 1
+	copyBtn.Font = Enum.Font.GothamBold
+	copyBtn.Text = "COPY"
+	copyBtn.TextColor3 = C_GOLD
+	copyBtn.TextSize = 10
+	copyBtn.AnchorPoint = Vector2.new(1, 0)
+	copyBtn.Position = UDim2.new(1, -16, 0, 64)
+	copyBtn.Size = UDim2.fromOffset(44, 14)
+	copyBtn.ZIndex = 4
+	copyBtn.Parent = panel
+
+	local hwidBox = Instance.new("TextBox")
+	hwidBox.BackgroundColor3 = C_SURFACE
+	hwidBox.BorderSizePixel = 0
+	hwidBox.ClearTextOnFocus = false
+	hwidBox.Font = Enum.Font.Code
+	hwidBox.Text = hwid
+	hwidBox.TextColor3 = Color3.fromRGB(170, 170, 170)
+	hwidBox.TextSize = 10
+	hwidBox.TextXAlignment = Enum.TextXAlignment.Left
+	hwidBox.TextEditable = false
+	hwidBox.Position = UDim2.new(0, 16, 0, 82)
+	hwidBox.Size = UDim2.new(1, -32, 0, 24)
+	hwidBox.ZIndex = 4
+	hwidBox.Parent = panel
+	local hwidCorner = Instance.new("UICorner")
+	hwidCorner.CornerRadius = UDim.new(0, 4)
+	hwidCorner.Parent = hwidBox
+
+	local keyLabel = Instance.new("TextLabel")
+	keyLabel.BackgroundTransparency = 1
+	keyLabel.Font = Enum.Font.Gotham
+	keyLabel.Text = "PREMIUM KEY"
+	keyLabel.TextColor3 = C_MUTED
+	keyLabel.TextSize = 10
+	keyLabel.TextXAlignment = Enum.TextXAlignment.Left
+	keyLabel.Position = UDim2.new(0, 16, 0, 116)
+	keyLabel.Size = UDim2.new(1, -32, 0, 12)
+	keyLabel.ZIndex = 4
+	keyLabel.Parent = panel
+
+	local inputFrame = Instance.new("Frame")
+	inputFrame.BackgroundColor3 = C_SURFACE
+	inputFrame.BorderSizePixel = 0
+	inputFrame.Position = UDim2.new(0, 16, 0, 132)
+	inputFrame.Size = UDim2.new(1, -32, 0, 34)
+	inputFrame.ZIndex = 3
+	inputFrame.Parent = panel
+	local inputCorner = Instance.new("UICorner")
+	inputCorner.CornerRadius = UDim.new(0, 5)
+	inputCorner.Parent = inputFrame
+	local inputStroke = Instance.new("UIStroke")
+	inputStroke.Color = Color3.fromRGB(60, 60, 60)
+	inputStroke.Transparency = 0.4
+	inputStroke.Thickness = 1
+	inputStroke.Parent = inputFrame
+
+	local inputBox = Instance.new("TextBox")
+	inputBox.BackgroundTransparency = 1
+	inputBox.ClearTextOnFocus = false
+	inputBox.Font = Enum.Font.GothamBold
+	inputBox.PlaceholderText = "BANANA-XXXXX-XXXXX-XXXXX"
+	inputBox.PlaceholderColor3 = Color3.fromRGB(95, 95, 95)
+	inputBox.Text = ""
+	inputBox.TextColor3 = C_TEXT
+	inputBox.TextSize = 13
+	inputBox.TextXAlignment = Enum.TextXAlignment.Left
+	inputBox.Position = UDim2.new(0, 10, 0, 0)
+	inputBox.Size = UDim2.new(1, -20, 1, 0)
+	inputBox.ZIndex = 4
+	inputBox.Parent = inputFrame
+
+	local status = Instance.new("TextLabel")
+	status.BackgroundTransparency = 1
+	status.Font = Enum.Font.Gotham
+	status.Text = ""
+	status.TextColor3 = C_MUTED
+	status.TextSize = 10
+	status.TextXAlignment = Enum.TextXAlignment.Left
+	status.TextTruncate = Enum.TextTruncate.AtEnd
+	status.Position = UDim2.new(0, 16, 0, 172)
+	status.Size = UDim2.new(1, -32, 0, 14)
+	status.ZIndex = 4
+	status.Parent = panel
+
+	local function button(text, x, w, colour, textColour)
+		local b = Instance.new("TextButton")
+		b.AutoButtonColor = false
+		b.BackgroundColor3 = colour
+		b.BorderSizePixel = 0
+		b.Font = Enum.Font.GothamBold
+		b.Text = text
+		b.TextColor3 = textColour
+		b.TextSize = 12
+		b.Position = x
+		b.Size = w
+		b.ZIndex = 4
+		b.Parent = panel
+		local c = Instance.new("UICorner")
+		c.CornerRadius = UDim.new(0, 5)
+		c.Parent = b
+		return b
+	end
+
+	local continueBtn = button("CONTINUE",
+		UDim2.new(0, 16, 0, 194), UDim2.new(0.52, -20, 0, 34),
+		Color3.fromRGB(255, 255, 255), Color3.fromRGB(10, 10, 10))
+
+	local getKeyBtn = button("GET KEY",
+		UDim2.new(1, -16, 0, 194), UDim2.new(0.44, -12, 0, 34),
+		C_SURFACE, C_TEXT)
+	getKeyBtn.AnchorPoint = Vector2.new(1, 0)
+
+	local resetBtn = button("RESET DEVICE LINK",
+		UDim2.new(0, 16, 0, 236), UDim2.new(1, -32, 0, 30),
+		C_SURFACE, Color3.fromRGB(220, 190, 140))
+
+	local footer = Instance.new("TextLabel")
+	footer.BackgroundTransparency = 1
+	footer.Font = Enum.Font.Gotham
+	footer.Text = "One key works on one device. Resetting the link is limited to once per 24h."
+	footer.TextColor3 = Color3.fromRGB(90, 90, 90)
+	footer.TextSize = 9
+	footer.TextXAlignment = Enum.TextXAlignment.Left
+	footer.TextWrapped = true
+	footer.Position = UDim2.new(0, 16, 0, 272)
+	footer.Size = UDim2.new(1, -32, 0, 20)
+	footer.ZIndex = 4
+	footer.Parent = panel
+
+	local conns = {}
+	local finished = false
+	local accepted = false
+	local acceptedInfo = nil
+	-- A request can take up to API.Timeout seconds. Without this, mashing
+	-- CONTINUE or pressing Enter while a check is running would fire several
+	-- validations at once, and the last one to answer would win the status line.
+	local busy = false
+
+	local function setStatus(text, kind)
+		status.Text = text
+		if kind == "ok" then
+			status.TextColor3 = C_OK
+		elseif kind == "err" then
+			status.TextColor3 = C_ERR
+		else
+			status.TextColor3 = C_MUTED
+		end
+	end
+
+	local function stop()
+		finished = true
+		busy = false
+		for _, c in ipairs(conns) do
+			pcall(function() c:Disconnect() end)
+		end
+		conns = {}
+	end
+
+	local function accept(res, key)
+		-- The player may have pressed X while the request was in flight. The
+		-- prompt is already gone by then, so writing the key here would leave a
+		-- credential on disk for a session the player explicitly abandoned.
+		if finished or not gui.Parent then return end
+		accepted = true
+		acceptedInfo = infoOf(res, key)
+		writeSaved(key)
+		_G.BananaHubPremiumKeyOK = true
+		setStatus("Key accepted. Loading " .. product .. "...", "ok")
+		inputBox.TextEditable = false
+		inputBox.Active = false
+		continueBtn.Active = false
+		resetBtn.Active = false
+		continueBtn.Text = "LOADING"
+		task.delay(0.4, stop)
+	end
+
+	-- Validate, and if the server says the key is simply not bound yet, claim it
+	-- on this device. That two-step is what makes "1 key = 1 device" real: the
+	-- bind happens server-side and the second device is refused.
+	local function submit()
+		if finished or accepted or busy then return end
+
+		local entered = (inputBox.Text or ""):gsub("%s+", ""):upper()
+		if entered == "" then
+			setStatus("Type your key first.", "err")
+			inputBox:CaptureFocus()
+			return
+		end
+
+		busy = true
+		setStatus("Checking key...", "info")
+		local res, err = postJSON(API.ValidatePath, { key = entered, hwid = hwid })
+		if finished then
+			busy = false
+			return
+		end
+		if not res then
+			busy = false
+			setStatus(err or "Cannot reach the key server.", "err")
+			return
+		end
+
+		-- UNCLAIMED is checked FIRST and deliberately, because the server reports
+		-- it as ok=true (the key itself is valid, it is just not bound yet). If
+		-- the generic ok check ran first, an unbound key would be accepted
+		-- without ever being linked to this device - which is exactly the
+		-- one-key-per-device rule this gate exists to enforce.
+		if res.code == "UNCLAIMED" then
+			setStatus("Linking this device...", "info")
+			local claimed, cerr = postJSON(API.ClaimPath, { key = entered, hwid = hwid })
+			busy = false
+			if finished then return end
+			if not claimed then
+				setStatus(cerr or "Could not link this device.", "err")
+				return
+			end
+			if claimed.ok then
+				accept(claimed, entered)
+			else
+				setStatus(claimed.message or "Could not link this device.", "err")
+			end
+			return
+		end
+
+		busy = false
+		if res.ok then
+			accept(res, entered)
+			return
+		end
+
+		if res.code == "HWID_MISMATCH" then
+			setStatus("Locked to another device. Use RESET DEVICE LINK.", "err")
+			return
+		end
+
+		setStatus(res.message or "Key rejected.", "err")
+	end
+
+	local function resetDevice()
+		if finished or busy then return end
+		local entered = (inputBox.Text or ""):gsub("%s+", ""):upper()
+		if entered == "" then
+			local saved = readSaved()
+			entered = saved or ""
+		end
+		if entered == "" then
+			setStatus("Type the key you want to unlink.", "err")
+			return
+		end
+
+		busy = true
+		setStatus("Clearing the device link...", "info")
+		local res, err = postJSON(API.ResetPath, { key = entered })
+		busy = false
+		if finished then return end
+		if not res then
+			setStatus(err or "Cannot reach the key server.", "err")
+			return
+		end
+		if res.ok then
+			setStatus("Link cleared. Press CONTINUE to link this device.", "ok")
+		else
+			setStatus(res.message or "Could not reset this key.", "err")
+		end
+	end
+
+	conns[#conns + 1] = inputBox.FocusLost:Connect(function(enterPressed)
+		if enterPressed then submit() end
+	end)
+	conns[#conns + 1] = continueBtn.Activated:Connect(submit)
+	conns[#conns + 1] = resetBtn.Activated:Connect(resetDevice)
+	conns[#conns + 1] = closeBtn.Activated:Connect(stop)
+
+	conns[#conns + 1] = copyBtn.Activated:Connect(function()
+		if setclipboard then pcall(function() setclipboard(hwid) end) end
+		setStatus("Device id copied.", "ok")
+	end)
+
+	conns[#conns + 1] = getKeyBtn.Activated:Connect(function()
+		if setclipboard then pcall(function() setclipboard(siteURL) end) end
+		pcall(function()
+			game:GetService("GuiService"):OpenBrowserWindow(siteURL)
+		end)
+		setStatus("Opening " .. siteURL, "ok")
+	end)
+
+	-- Hover feedback
+	conns[#conns + 1] = continueBtn.MouseEnter:Connect(function()
+		if continueBtn.Active then
+			TweenService:Create(continueBtn, TweenInfo.new(0.12),
+				{ BackgroundColor3 = Color3.fromRGB(220, 220, 220) }):Play()
+		end
+	end)
+	conns[#conns + 1] = continueBtn.MouseLeave:Connect(function()
+		TweenService:Create(continueBtn, TweenInfo.new(0.12),
+			{ BackgroundColor3 = Color3.fromRGB(255, 255, 255) }):Play()
+	end)
+	conns[#conns + 1] = getKeyBtn.MouseEnter:Connect(function()
+		TweenService:Create(getKeyBtn, TweenInfo.new(0.12),
+			{ BackgroundColor3 = Color3.fromRGB(34, 34, 34) }):Play()
+	end)
+	conns[#conns + 1] = getKeyBtn.MouseLeave:Connect(function()
+		TweenService:Create(getKeyBtn, TweenInfo.new(0.12),
+			{ BackgroundColor3 = C_SURFACE }):Play()
+	end)
+
+	-- Drag by the header, mouse and touch.
+	local dragging, dragStart, panelStart = false, nil, nil
+	conns[#conns + 1] = title.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			panelStart = panel.Position
+		end
+	end)
+	conns[#conns + 1] = UserInputService.InputChanged:Connect(function(input)
+		if not dragging or finished then return end
+		if input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch then
+			local d = input.Position - dragStart
+			panel.Position = UDim2.new(
+				panelStart.X.Scale, panelStart.X.Offset + d.X,
+				panelStart.Y.Scale, panelStart.Y.Offset + d.Y)
+		end
+	end)
+	conns[#conns + 1] = UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	setStatus("Enter your key, or press GET KEY to open the site.", "info")
+	inputBox:CaptureFocus()
+
+	-- Hold the main thread here while the prompt is up. The game keeps running.
+	while not finished and gui.Parent do
+		task.wait(0.1)
+	end
+
+	local wasAccepted = accepted
+	local info = acceptedInfo
+	pcall(function() gui:Destroy() end)
+
+	if not wasAccepted then
+		return false, "Key not accepted."
+	end
+	return true, info
+end
+
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_17"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_18"
 
 return BananaHub
