@@ -13,12 +13,11 @@
     No key system, no roles, no tiers. Everything is local.
 ]]
 
--- BANANAHUB_BUILD_BLACK_14
+-- BANANAHUB_BUILD_BLACK_15
 -- Build marker. The Soreya scripts look for this exact string before they
--- accept a copy of this library, so a stale workspace cache (or the previous
--- build, whose GUI was parented into CoreGui where the game could see it) can
--- never be loaded again.
-local BUILD = "black-14"
+-- accept a copy of this library, so a stale workspace cache (or an earlier
+-- build, which had no floating open icon) can never be loaded again.
+local BUILD = "black-15"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -1012,7 +1011,145 @@ function BananaHub:Window(GuiConfig)
 
 	local GuiFunc = {}
 
-	local BananaHubGui = Instance.new("ScreenGui")
+	-- Forward-declared: BuildFloatIcon below parents the icon into this ScreenGui,
+	-- but the Gui itself is only built further down.
+	local BananaHubGui
+
+	-- ---------------------------------------------------------------
+	-- Floating open button
+	--
+	-- A round banana icon that stays on screen when the window is closed, so the
+	-- window can be reopened without the Insert key (which does not exist on a
+	-- phone). It is created once the ScreenGui exists (BuildFloatIcon, called
+	-- below), and shown/hidden by the open and close animations.
+	--
+	-- GuiConfig.OpenButton.Enabled = false turns it off for scripts that want a
+	-- hotkey-only window.
+	-- ---------------------------------------------------------------
+	local OpenButtonConfig = GuiConfig.OpenButton
+	if type(OpenButtonConfig) ~= "table" then OpenButtonConfig = {} end
+	local WantFloatIcon = OpenButtonConfig.Enabled ~= false
+
+	local FloatIcon = nil
+
+	local function BuildFloatIcon()
+		if not WantFloatIcon or FloatIcon or not BananaHubGui then return end
+
+		FloatIcon = Instance.new("TextButton")
+		FloatIcon.Name = "BananaHubFloatIcon"
+		FloatIcon.AnchorPoint = Vector2.new(0, 0)
+		-- Bottom-left, clear of the Roblox jump button and the chat bar.
+		FloatIcon.Position = UDim2.new(0, 20, 1, -120)
+		FloatIcon.Size = UDim2.new(0, 46, 0, 46)
+		FloatIcon.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+		FloatIcon.BackgroundTransparency = 0.15
+		FloatIcon.BorderSizePixel = 0
+		FloatIcon.AutoButtonColor = false
+		FloatIcon.Text = ""
+		FloatIcon.ClipsDescendants = false
+		-- Above the window: the icon is how you reopen a closed window, so it must
+		-- never end up behind the panel.
+		FloatIcon.ZIndex = 900
+		FloatIcon.Parent = BananaHubGui
+
+		local FloatCorner = Instance.new("UICorner")
+		FloatCorner.CornerRadius = UDim.new(1, 0)
+		FloatCorner.Parent = FloatIcon
+
+		local FloatStroke = Instance.new("UIStroke")
+		FloatStroke.Color = GuiConfig.Color
+		FloatStroke.Thickness = 1.4
+		FloatStroke.Transparency = 0.55
+		FloatStroke.Parent = FloatIcon
+
+		local FloatImage = Instance.new("ImageLabel")
+		FloatImage.Name = "FloatImage"
+		FloatImage.BackgroundTransparency = 1
+		FloatImage.BorderSizePixel = 0
+		FloatImage.AnchorPoint = Vector2.new(0.5, 0.5)
+		FloatImage.Position = UDim2.new(0.5, 0, 0.5, 0)
+		FloatImage.Size = UDim2.new(1, -8, 1, -8)
+		FloatImage.ScaleType = Enum.ScaleType.Fit
+		FloatImage.Image = GuiConfig.Icon
+		FloatImage.ZIndex = 901
+		FloatImage.Parent = FloatIcon
+
+		-- Keep the icon on screen when the viewport changes, and never let a drag
+		-- strand it off the edge (a thumb drag on a phone makes that easy).
+		local function ClampFloatIcon()
+			if not FloatIcon or not FloatIcon.Parent then return end
+			local cam = workspace.CurrentCamera
+			local vp = cam and cam.ViewportSize or viewport
+			if not vp or vp.X <= 0 or vp.Y <= 0 then return end
+			local abs = FloatIcon.AbsolutePosition
+			local size = FloatIcon.AbsoluteSize
+			local maxX = math.max(vp.X - size.X, 0)
+			local maxY = math.max(vp.Y - size.Y, 0)
+			local x = math.clamp(abs.X, 0, maxX)
+			local y = math.clamp(abs.Y, 0, maxY)
+			if math.abs(x - abs.X) > 0.5 or math.abs(y - abs.Y) > 0.5 then
+				FloatIcon.Position = UDim2.new(0, math.floor(x), 0, math.floor(y))
+			end
+		end
+
+		-- Drag, and treat a release without movement as a click. Doing both from
+		-- one handler is what keeps the icon usable on touch, where there is no
+		-- hover and a separate click target would fight the drag.
+		local dragging, dragInput, dragStart, startAbs, moved = false, nil, nil, nil, false
+		FloatIcon.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch then
+				dragging = true
+				moved = false
+				dragStart = input.Position
+				startAbs = FloatIcon.AbsolutePosition
+			end
+		end)
+		FloatIcon.InputChanged:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseMovement
+				or input.UserInputType == Enum.UserInputType.Touch then
+				dragInput = input
+			end
+		end)
+		UserInputService.InputChanged:Connect(function(input)
+			if not dragging or input ~= dragInput or not startAbs then return end
+			local delta = input.Position - dragStart
+			if math.abs(delta.X) > 4 or math.abs(delta.Y) > 4 then moved = true end
+			FloatIcon.Position = UDim2.new(
+				0, math.floor(startAbs.X + delta.X), 0, math.floor(startAbs.Y + delta.Y))
+		end)
+		local function EndFloatDrag()
+			if not dragging then return end
+			dragging = false
+			dragInput = nil
+			ClampFloatIcon()
+		end
+		FloatIcon.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch then
+				EndFloatDrag()
+				-- A tap (not a drag) opens the window.
+				if not moved then
+					pcall(function() CircleClick(FloatIcon, Mouse.X, Mouse.Y) end)
+					if GuiFunc.OnFloatClick then pcall(GuiFunc.OnFloatClick) end
+				end
+			end
+		end)
+		UserInputService.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1
+				or input.UserInputType == Enum.UserInputType.Touch then
+				EndFloatDrag()
+			end
+		end)
+		pcall(function()
+			local cam = workspace.CurrentCamera
+			if cam then
+				cam:GetPropertyChangedSignal("ViewportSize"):Connect(ClampFloatIcon)
+			end
+		end)
+	end
+
+	BananaHubGui = Instance.new("ScreenGui")
 	local DropShadowHolder = Instance.new("Frame")
 	local DropShadow = Instance.new("ImageLabel")
 	local Main = Instance.new("Frame")
@@ -1456,7 +1593,6 @@ function BananaHub:Window(GuiConfig)
 		local toggle = CoreGui:FindFirstChild("ToggleUIButton")
 		if toggle then pcall(function() toggle:Destroy() end) end
 	end
-
 	-- Smooth open/close. The window zooms in/out with a Quart ease instead of
 	-- popping in and out; it stays interactable the whole time and a close can
 	-- interrupt an in-progress open (and vice versa).
@@ -1512,6 +1648,9 @@ function BananaHub:Window(GuiConfig)
 		CancelSizeTween()
 		local target = RestingSize()
 		DropShadowHolder.Visible = true
+		-- The floating icon is the reopen affordance; hide it while the window is
+		-- up so it never sits on top of the panel.
+		if FloatIcon then FloatIcon.Visible = false end
 		DropShadowHolder.AnchorPoint = Vector2.new(0.5, 0.5)
 		DropShadowHolder.Position = RestingPos()
 		DropShadowHolder.Size = ShrunkSize(target, 0.9)
@@ -1540,7 +1679,23 @@ function BananaHub:Window(GuiConfig)
 			if not DropShadowHolder then return end
 			DropShadowHolder.Visible = false
 			DropShadowHolder.Size = target
+			-- Bring the icon back so the window can be reopened.
+			if FloatIcon then FloatIcon.Visible = true end
 		end)
+	end
+
+	-- The icon exists from the start (the window opens closed-ish on a re-exec
+	-- only after PlayOpen runs, so keep it hidden until then).
+	BuildFloatIcon()
+	if FloatIcon then
+		FloatIcon.Visible = false
+		GuiFunc.OnFloatClick = function()
+			if DropShadowHolder and DropShadowHolder.Visible then
+				PlayClose()
+			else
+				PlayOpen()
+			end
+		end
 	end
 
 	Min.Activated:Connect(function()
@@ -3549,6 +3704,13 @@ function BananaHub:Window(GuiConfig)
 		GuiFunc:DestroyGui()
 	end
 
+	-- Let a script show/hide the floating icon at runtime (the Soreya scripts
+	-- keep it on; a script that wants a hotkey-only window can turn it off).
+	function GuiFunc:SetFloatIcon(v)
+		if not FloatIcon then return end
+		FloatIcon.Visible = v ~= false
+	end
+
 	return GuiFunc
 end
 
@@ -3572,6 +3734,6 @@ function BananaHub:SetTheme() end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_14"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_15"
 
 return BananaHub
