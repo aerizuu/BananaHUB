@@ -14,11 +14,11 @@
     free script never calls it, so the library stays usable without a key.
 ]]
 
--- BANANAHUB_BUILD_BLACK_19
+-- BANANAHUB_BUILD_BLACK_20
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (or an earlier
 -- build, which had no floating open icon) can never be loaded again.
-local BUILD = "black-19"
+local BUILD = "black-20"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -1495,6 +1495,20 @@ function BananaHub:Window(GuiConfig)
 	LayersPageLayout.EasingDirection = Enum.EasingDirection.InOut
 	LayersPageLayout.EasingStyle = Enum.EasingStyle.Quad
 
+	-- Key time pill: sits directly above the player footer in the sidebar. Only
+	-- built when a key is in play, so the free build's sidebar is unchanged.
+	--
+	-- The footer occupies the bottom 40px (-43..-3) and the tab list above it
+	-- ends at -50, so the pill takes a 16px slot at -64..-48 and the list is
+	-- shortened by the same amount. Both branches read BananaHub.KeyInfo
+	-- directly rather than caching it, so this adds no local to the window.
+	if BananaHub.KeyInfo ~= nil and BananaHub.MakeKeyBadge then
+		local KeyTimePill = BananaHub.MakeKeyBadge(LayersTab)
+		KeyTimePill.AnchorPoint = Vector2.new(0, 1)
+		KeyTimePill.Position = UDim2.new(0, 3, 1, -48)
+		KeyTimePill.Size = UDim2.new(1, -18, 0, 16)
+	end
+
 	local PlayerFooter = Instance.new("Frame")
 	PlayerFooter.Name = "PlayerFooter"
 	PlayerFooter.AnchorPoint = Vector2.new(0, 1)
@@ -1572,7 +1586,9 @@ function BananaHub:Window(GuiConfig)
 	ScrollTab.Active = true
 	ScrollTab.ClipsDescendants = true
 	ScrollTab.BackgroundTransparency = 0.999
-	ScrollTab.Size = UDim2.new(1, 0, 1, -50)
+	-- 50px normally clears the player footer; with the key pill in play the
+	-- list must stop above it instead of scrolling underneath.
+	ScrollTab.Size = UDim2.new(1, 0, 1, (BananaHub.KeyInfo ~= nil) and -66 or -50)
 	ScrollTab.Name = "ScrollTab"
 	ScrollTab.Parent = LayersTab
 
@@ -4104,6 +4120,183 @@ function BananaHub.GetHWID()
 	return digest
 end
 
+--───────────────────────────────────────────────────────────────────────────
+-- KEY TIME  (shared)
+--
+-- One implementation, used by the key prompt and by the sidebar badge, so the
+-- two can never disagree about a key's remaining life or about the colour it
+-- reads in: gold = Lifetime, blue = a timed plan (24h / 7d / 30d), red = out
+-- of time.
+--
+-- Attached to the module table rather than declared as file-level locals: the
+-- main chunk already carries a lot of live locals and every one of them counts
+-- against Luau's 200-register limit.
+--───────────────────────────────────────────────────────────────────────────
+BananaHub.KeyColors = {
+	GOLD  = Color3.fromRGB(255, 196, 61),
+	BLUE  = Color3.fromRGB(90, 165, 255),
+	ERR   = Color3.fromRGB(255, 110, 110),
+	MUTED = Color3.fromRGB(140, 140, 140),
+}
+
+-- "2026-01-01T00:00:00Z", "...+07:00", "...123Z" -> epoch seconds. nil when
+-- the stamp is missing or not a shape this understands.
+function BananaHub.ParseIsoStamp(s)
+	if type(s) ~= "string" then return nil end
+	local y, mo, d, hh, mi, ss = s:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)[T ](%d%d):(%d%d):?(%d*)")
+	if not y then return nil end
+	local ok, stamp = pcall(os.time, {
+		year = tonumber(y), month = tonumber(mo), day = tonumber(d),
+		hour = tonumber(hh), min = tonumber(mi), sec = tonumber(ss) or 0,
+	})
+	if not ok or type(stamp) ~= "number" then return nil end
+	-- os.time reads that table as UTC. When the server wrote a local offset,
+	-- shift back so the epoch is really UTC instead of hours out.
+	local sign, oh, om = s:match("([%+%-])(%d%d):(%d%d)%s*$")
+	if sign then
+		local off = (tonumber(oh) * 3600) + (tonumber(om) * 60)
+		if sign == "+" then stamp = stamp - off else stamp = stamp + off end
+	end
+	return stamp
+end
+
+-- 604800 -> "7d 0h". Short enough for a narrow pill.
+function BananaHub.ShortDuration(secs)
+	secs = math.max(0, math.floor(secs))
+	local d = math.floor(secs / 86400)
+	local h = math.floor((secs % 86400) / 3600)
+	local m = math.floor((secs % 3600) / 60)
+	if d > 0 then return string.format("%dd %dh", d, h) end
+	if h > 0 then return string.format("%dh %dm", h, m) end
+	if m > 0 then return string.format("%dm", m) end
+	return string.format("%ds", secs % 60)
+end
+
+-- info -> text, colour, state. state is "lifetime" | "timed" | "expired" |
+-- "unknown", and is what every caller branches on.
+function BananaHub.KeyTimeOf(info)
+	local KC = BananaHub.KeyColors
+	if not info then return "-", KC.MUTED, "unknown" end
+	if info.lifetime == true then return "LIFETIME", KC.GOLD, "lifetime" end
+
+	local stamp = BananaHub.ParseIsoStamp(info.expiresAt)
+	if stamp then
+		local left = stamp - os.time()
+		if left <= 0 then
+			-- No date here on purpose: os.date's "!" UTC prefix is not
+			-- guaranteed on every Luau runtime, and a date adds nothing the
+			-- player can act on. "EXPIRED" plus the status line's "renew on the
+			-- key site" says everything.
+			return "EXPIRED", KC.ERR, "expired"
+		end
+		return BananaHub.ShortDuration(left) .. " LEFT", KC.BLUE, "timed"
+	end
+
+	-- No usable expiry: fall back to whatever the plan is called, but only
+	-- claim Lifetime when the name actually says so. A backend that simply
+	-- omits the expiry must not read as a permanent key.
+	local plan = tostring(info.planLabel or info.plan or ""):upper()
+	if plan ~= "" then
+		if plan:find("LIFETIME") then return "LIFETIME", KC.GOLD, "lifetime" end
+		return plan, KC.BLUE, "timed"
+	end
+	return "-", KC.MUTED, "unknown"
+end
+
+-- The accepted key, kept here so the window can show its life long after the
+-- prompt has closed. nil until a key is accepted.
+BananaHub.KeyInfo = nil
+
+-- Builds a small "KEY TIME" pill inside `parent` and returns a refresh
+-- function. Called by the window so the key's remaining life stays visible for
+-- the whole session, not just the 0.4s the prompt is still on screen after a
+-- key is accepted.
+--
+-- Refreshing is driven by a timer rather than a one-off read: a 24h key must
+-- visibly count down, and must turn red the moment it runs out mid-session.
+function BananaHub.MakeKeyBadge(parent)
+	local KC = BananaHub.KeyColors
+
+	local holder = Instance.new("Frame")
+	holder.Name = "KeyTimeBadge"
+	holder.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	holder.BackgroundTransparency = 0.35
+	holder.BorderSizePixel = 0
+	holder.Size = UDim2.new(1, 0, 0, 16)
+	holder.ZIndex = 100
+	holder.Parent = parent
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 4)
+	corner.Parent = holder
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = KC.MUTED
+	stroke.Thickness = 1
+	stroke.Transparency = 0.75
+	stroke.Parent = holder
+
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Font = Enum.Font.GothamBold
+	label.Text = ""
+	label.TextColor3 = KC.MUTED
+	label.TextSize = 9
+	label.TextXAlignment = Enum.TextXAlignment.Center
+	label.TextTruncate = Enum.TextTruncate.AtEnd
+	label.Size = UDim2.new(1, -8, 1, 0)
+	label.Position = UDim2.new(0, 4, 0, 0)
+	label.ZIndex = 101
+	label.Parent = holder
+
+	local function refresh()
+		local text, colour, state = BananaHub.KeyTimeOf(BananaHub.KeyInfo)
+		if state == "unknown" then
+			-- No key info (free build, or the gate was not used): stay out of
+			-- the way entirely instead of showing a permanent "-".
+			holder.Visible = false
+			return
+		end
+		holder.Visible = true
+
+		-- The sidebar is only ~58px wide on a phone, so the pill carries the
+		-- short form. The prompt's KEY TIME row has the room to be verbose;
+		-- this only has to say which of the three states it is in.
+		if state == "expired" then
+			label.Text = "KEY  EXPIRED"
+		elseif state == "lifetime" then
+			label.Text = "KEY  LIFETIME"
+		else
+			label.Text = "KEY  " .. (tostring(text):gsub("%s+LEFT$", ""))
+		end
+
+		label.TextColor3 = colour
+		stroke.Color = colour
+	end
+
+	refresh()
+	-- Keeps the countdown honest and picks up a mid-session change. 15s is
+	-- plenty: the label shows minutes at the finest, and the window is built
+	-- after the gate has already published KeyInfo, so the first render is
+	-- correct without any polling. The loop ends with the pill, so a closed
+	-- window leaves no timer running.
+	local alive = true
+	-- Destroying is a recent Instance event; fall back to the holder.Parent
+	-- check below on a client that does not have it.
+	pcall(function()
+		holder.Destroying:Connect(function() alive = false end)
+	end)
+	task.spawn(function()
+		while alive and holder.Parent do
+			task.wait(15)
+			if not alive or not holder.Parent then break end
+			refresh()
+		end
+	end)
+
+	return holder, refresh
+end
+
 function BananaHub:KeyGate(opts)
 	opts = opts or {}
 
@@ -4314,6 +4507,36 @@ function BananaHub:KeyGate(opts)
 			return nil
 		end
 
+		-- The keys table revokes with a timestamp, not a boolean, and keeps a
+		-- plain `status` word. Neither is a verdict on its own: status =
+		-- "active" means the key is fine, so only the rejecting spellings are
+		-- read. Without this a revoked row could still arrive with ok = true
+		-- and the UI would accept it.
+		--
+		-- Only "expired" counts as out of time. Words like "used" are NOT
+		-- included on purpose: in most key schemas "used" means "claimed by a
+		-- device", which is exactly what a healthy key looks like, and reading
+		-- it as expired would lock out every paying customer. Real expiry is
+		-- decided by expires_at in KeyTimeOf, which has the actual timestamp.
+		local statusRaw = tostring(r.status or ""):lower()
+		local revoked = (r.revoked_at ~= nil and r.revoked_at ~= "")
+			or r.revoked == true
+			or statusRaw == "revoked" or statusRaw == "disabled"
+			or statusRaw == "banned" or statusRaw == "blocked"
+		local outOfTime = statusRaw == "expired"
+
+		if revoked then
+			okFlag = false
+			code = "KEY_REVOKED"
+		elseif outOfTime then
+			okFlag = false
+			code = "KEY_EXPIRED"
+		elseif statusRaw == "active" or statusRaw == "valid" then
+			-- r.status was folded into `code` above; that is the column, not a
+			-- verdict, so make sure it did not leak in as a pseudo-code.
+			if code == "ACTIVE" or code == "VALID" then code = nil end
+		end
+
 		-- Some backends report a boolean plus a free-text reason instead of a
 		-- code; derive the code the UI branches on from the text.
 		if not code then
@@ -4366,15 +4589,19 @@ function BananaHub:KeyGate(opts)
 			ok = okFlag and true or false,
 			code = code,
 			message = r.message or r.reason or r.msg or r.error_description,
-			plan = r.plan,
-			planLabel = r.planLabel or r.plan_label,
+			-- Your schema names the plan column `duration` ("24h"/"7d"/"30d"/
+			-- "lifetime"), not `plan`, and reports revocation via `revoked_at`.
+			-- Accept both so the Key Time row has something to show without the
+			-- RPC having to rename its columns.
+			plan = r.plan or r.duration or r.plan_id,
+			planLabel = r.planLabel or r.plan_label or r.duration or r.plan,
 			expiresAt = r.expiresAt or r.expires_at or r.expiry,
 			-- Never infer lifetime from a missing expiry: a backend that simply
 			-- does not echo the expiry for a 24h key would otherwise be shown as
 			-- a permanent key. Only an explicit flag or a "lifetime" plan counts.
 			lifetime = r.lifetime == true
 				or r.isLifetime == true
-				or tostring(r.plan or ""):lower():find("lifetime") ~= nil
+				or tostring(r.plan or r.duration or ""):lower():find("lifetime") ~= nil
 				or tostring(r.planLabel or r.plan_label or ""):lower():find("lifetime") ~= nil,
 		}
 	end
@@ -4415,16 +4642,48 @@ function BananaHub:KeyGate(opts)
 		}
 	end
 
-	-- Fast path: a remembered key that the server still accepts gets in with no
-	-- prompt at all. Requires code == "OK" rather than just ok=true, so a key
-	-- that is valid but not yet bound to this device still goes through the
-	-- prompt and gets claimed.
+	--───────────────────────────────────────────────────────────────────────
+	-- KEY TIME
+	--
+	-- The parsing and colour rules live in BananaHub.KeyTimeOf so the sidebar
+	-- badge shows exactly what the prompt showed. These two locals only adapt
+	-- the prompt's own widgets to it.
+	--───────────────────────────────────────────────────────────────────────
+
+	local function keyTimeOf(res)
+		return BananaHub.KeyTimeOf(res)
+	end
+
+	-- A saved key that the server still accepts gets in with no prompt at all.
+	-- Requires code == "OK" rather than just ok=true, so a key that is valid but
+	-- not yet bound to this device still goes through the prompt and gets
+	-- claimed. A saved key the server rejects also falls through to the prompt,
+	-- carrying the reason, so the player is told why they are being asked again
+	-- instead of just seeing the key box reappear.
+	local savedExpired = false
+	local savedReason = nil
 	if not alwaysAsk then
 		local saved = readSaved()
 		if saved then
 			local res = postJSON(API.RpcPath, { p_action = "validate", p_key = saved, p_device_hash = hwid })
 			if res and res.ok and res.code == "OK" then
-				return true, infoOf(res, saved)
+				local _, _, state = keyTimeOf(res)
+				if state ~= "expired" then
+					-- Same handoff as accept(): the window needs this to show
+					-- the key's life without asking the server again.
+					BananaHub.KeyInfo = infoOf(res, saved)
+					return true, BananaHub.KeyInfo
+				end
+				savedExpired = true
+			elseif res then
+				-- Not OK. Only the two reasons the player can act on are worth
+				-- carrying over; anything else is a server problem and should
+				-- not be blamed on the saved key.
+				if res.code == "KEY_EXPIRED" then
+					savedExpired = true
+				elseif res.code == "KEY_REVOKED" then
+					savedReason = "Your saved key was revoked. Check the key site."
+				end
 			end
 		end
 	end
@@ -4463,7 +4722,7 @@ function BananaHub:KeyGate(opts)
 	local panel = Instance.new("Frame")
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.Position = UDim2.fromScale(0.5, 0.5)
-	panel.Size = UDim2.fromOffset(360, 276)
+	panel.Size = UDim2.fromOffset(360, 294)
 	panel.BackgroundColor3 = C_BG
 	panel.BorderSizePixel = 0
 	panel.ZIndex = 2
@@ -4566,9 +4825,14 @@ function BananaHub:KeyGate(opts)
 	hwidBox.Font = Enum.Font.Code
 	hwidBox.Text = hwid
 	hwidBox.TextColor3 = Color3.fromRGB(170, 170, 170)
-	hwidBox.TextSize = 10
+	-- 64 hex chars at size 10 does not fit 328px, and a clipped id is worse than
+	-- useless: the user copies it off the screen and it does not match what was
+	-- sent. Shrink the text so the whole digest is always visible, and keep
+	-- COPY as the reliable way to get it out.
+	hwidBox.TextSize = 8
 	hwidBox.TextXAlignment = Enum.TextXAlignment.Left
 	hwidBox.TextEditable = false
+	hwidBox.TextTruncate = Enum.TextTruncate.None
 	hwidBox.Position = UDim2.new(0, 16, 0, 82)
 	hwidBox.Size = UDim2.new(1, -32, 0, 24)
 	hwidBox.ZIndex = 4
@@ -4620,6 +4884,33 @@ function BananaHub:KeyGate(opts)
 	inputBox.ZIndex = 4
 	inputBox.Parent = inputFrame
 
+	-- Key time: the plan's remaining life, colour-coded. Sits under the key
+	-- field so it is the first thing read after a key is accepted.
+	local timeLabel = Instance.new("TextLabel")
+	timeLabel.BackgroundTransparency = 1
+	timeLabel.Font = Enum.Font.Gotham
+	timeLabel.Text = "KEY TIME"
+	timeLabel.TextColor3 = C_MUTED
+	timeLabel.TextSize = 10
+	timeLabel.TextXAlignment = Enum.TextXAlignment.Left
+	timeLabel.Position = UDim2.new(0, 16, 0, 172)
+	timeLabel.Size = UDim2.new(0, 70, 0, 14)
+	timeLabel.ZIndex = 4
+	timeLabel.Parent = panel
+
+	local timeValue = Instance.new("TextLabel")
+	timeValue.BackgroundTransparency = 1
+	timeValue.Font = Enum.Font.GothamBold
+	timeValue.Text = "-"
+	timeValue.TextColor3 = C_MUTED
+	timeValue.TextSize = 10
+	timeValue.TextXAlignment = Enum.TextXAlignment.Right
+	timeValue.TextTruncate = Enum.TextTruncate.AtEnd
+	timeValue.Position = UDim2.new(0, 86, 0, 172)
+	timeValue.Size = UDim2.new(1, -102, 0, 14)
+	timeValue.ZIndex = 4
+	timeValue.Parent = panel
+
 	local status = Instance.new("TextLabel")
 	status.BackgroundTransparency = 1
 	status.Font = Enum.Font.Gotham
@@ -4628,7 +4919,7 @@ function BananaHub:KeyGate(opts)
 	status.TextSize = 10
 	status.TextXAlignment = Enum.TextXAlignment.Left
 	status.TextTruncate = Enum.TextTruncate.AtEnd
-	status.Position = UDim2.new(0, 16, 0, 172)
+	status.Position = UDim2.new(0, 16, 0, 190)
 	status.Size = UDim2.new(1, -32, 0, 14)
 	status.ZIndex = 4
 	status.Parent = panel
@@ -4653,11 +4944,11 @@ function BananaHub:KeyGate(opts)
 	end
 
 	local continueBtn = button("CONTINUE",
-		UDim2.new(0, 16, 0, 194), UDim2.new(0.52, -20, 0, 34),
+		UDim2.new(0, 16, 0, 212), UDim2.new(0.52, -20, 0, 34),
 		Color3.fromRGB(255, 255, 255), Color3.fromRGB(10, 10, 10))
 
 	local getKeyBtn = button("GET KEY",
-		UDim2.new(1, -16, 0, 194), UDim2.new(0.44, -12, 0, 34),
+		UDim2.new(1, -16, 0, 212), UDim2.new(0.44, -12, 0, 34),
 		C_SURFACE, C_TEXT)
 	getKeyBtn.AnchorPoint = Vector2.new(1, 0)
 
@@ -4669,7 +4960,7 @@ function BananaHub:KeyGate(opts)
 	footer.TextSize = 9
 	footer.TextXAlignment = Enum.TextXAlignment.Left
 	footer.TextWrapped = true
-	footer.Position = UDim2.new(0, 16, 0, 240)
+	footer.Position = UDim2.new(0, 16, 0, 258)
 	footer.Size = UDim2.new(1, -32, 0, 24)
 	footer.ZIndex = 4
 	footer.Parent = panel
@@ -4694,6 +4985,11 @@ function BananaHub:KeyGate(opts)
 		end
 	end
 
+	local function setKeyTime(text, colour)
+		timeValue.Text = tostring(text or "-")
+		timeValue.TextColor3 = colour or C_MUTED
+	end
+
 	local function stop()
 		finished = true
 		busy = false
@@ -4710,6 +5006,9 @@ function BananaHub:KeyGate(opts)
 		if finished or not gui.Parent then return end
 		accepted = true
 		acceptedInfo = infoOf(res, key)
+		-- Publish it for the window: the prompt is about to close, and the key's
+		-- remaining life is the one thing a player needs to see after that.
+		BananaHub.KeyInfo = acceptedInfo
 		writeSaved(key)
 		_G.BananaHubPremiumKeyOK = true
 		setStatus("Key accepted. Loading " .. product .. "...", "ok")
@@ -4717,7 +5016,10 @@ function BananaHub:KeyGate(opts)
 		inputBox.Active = false
 		continueBtn.Active = false
 		continueBtn.Text = "LOADING"
-		task.delay(0.4, stop)
+		-- Long enough to actually read the KEY TIME row that was just filled
+		-- in. At 0.4s the prompt vanished before anyone could see it, which is
+		-- why the key's life now also lives in the sidebar pill.
+		task.delay(1.2, stop)
 	end
 
 	-- One call does both jobs: the RPC validates the key and binds it to this
@@ -4747,14 +5049,41 @@ function BananaHub:KeyGate(opts)
 			return
 		end
 
+		-- Show the plan's life before deciding anything, so the player can see
+		-- WHY a key was refused when it is simply out of time.
+		local timeText, timeColour, timeState = keyTimeOf(res)
+		setKeyTime(timeText, timeColour)
+
 		busy = false
-		if res.ok then
+		if res.ok and timeState ~= "expired" then
 			accept(res, entered)
+			return
+		end
+
+		-- A key the server still calls valid but whose clock has run out must
+		-- not open the script. This is the "auto error" case: show it plainly
+		-- and send the player to the site to renew.
+		if timeState == "expired" then
+			setStatus("Key expired. Renew it on the key site.", "err")
 			return
 		end
 
 		if res.code == "HWID_MISMATCH" then
 			setStatus("Locked to another device. Unlink it on the key site.", "err")
+			return
+		end
+
+		-- Revoked by an admin. There is nothing the player can do in-game, so
+		-- point at the site rather than echoing a bare "Key unavailable".
+		if res.code == "KEY_REVOKED" then
+			setKeyTime("REVOKED", C_ERR)
+			setStatus("This key was revoked. Check the key site.", "err")
+			return
+		end
+
+		if res.code == "KEY_EXPIRED" then
+			setKeyTime("EXPIRED", C_ERR)
+			setStatus("Key expired. Renew it on the key site.", "err")
 			return
 		end
 
@@ -4836,6 +5165,15 @@ function BananaHub:KeyGate(opts)
 	end)
 
 	setStatus("Enter your key, or press GET KEY to open the site.", "info")
+	if savedExpired then
+		-- The remembered key ran out. Say so on open rather than making the
+		-- player re-type it to find out why they were asked again.
+		setKeyTime("EXPIRED", C_ERR)
+		setStatus("Your saved key expired. Renew it on the key site.", "err")
+	elseif savedReason then
+		setKeyTime("REVOKED", C_ERR)
+		setStatus(savedReason, "err")
+	end
 	inputBox:CaptureFocus()
 
 	-- Hold the main thread here while the prompt is up. The game keeps running.
@@ -4855,6 +5193,6 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_19"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_20"
 
 return BananaHub
