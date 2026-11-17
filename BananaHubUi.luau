@@ -14,11 +14,11 @@
     free script never calls it, so the library stays usable without a key.
 ]]
 
--- BANANAHUB_BUILD_BLACK_22
+-- BANANAHUB_BUILD_BLACK_25
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (or an earlier
 -- build, which had no floating open icon) can never be loaded again.
-local BUILD = "black-22"
+local BUILD = "black-25"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -2094,6 +2094,24 @@ function BananaHub:Window(GuiConfig)
 	-- knowing about GuiFunc.
 	BananaHub.CloseDropdowns = function() closeAllDropdowns() end
 
+	-- Run a widget callback with the "an executed choice leaves no list open"
+	-- rule enforced around it. Every widget that fires a feature goes through
+	-- this, so the rule holds for a dropdown pick, a toggle, a button, a slider
+	-- and an input alike - and it holds even when the callback itself errors or
+	-- opens something, which is the case that used to leave a list stranded
+	-- over the page.
+	--
+	-- Assigned onto the module rather than held in a local: this function is
+	-- already close to Luau's 200-local limit, and one more local here is one
+	-- the rest of the window cannot afford.
+	BananaHub.RunCallback = function(fn, ...)
+		local ok, err = pcall(fn, ...)
+		pcall(closeAllDropdowns)
+		if not ok then
+			warn("[BANANAHUB] widget callback failed: " .. tostring(err))
+		end
+	end
+
 	-- Floating layer for open dropdown lists. With ZIndexBehavior.Sibling a
 	-- child of Main is always drawn above Main's other children, so a list that
 	-- lives here escapes its row, its section and the scrolling frame instead of
@@ -2342,20 +2360,35 @@ function BananaHub:Window(GuiConfig)
 		end
 		if not inside then return end
 
-		-- The row's own button already applied this choice.
-		if pressed.entry.PickStamp() ~= pressed.stamp then return end
+		-- The row's own button normally already applied this choice.
+		local alreadyApplied = pressed.entry.PickStamp() ~= pressed.stamp
 
 		-- The list must not have been replaced by a different one in the
 		-- meantime: applying a row from a list that is no longer the open one
 		-- would change an unrelated dropdown.
+		local replaced = false
 		for _, entry in ipairs(OpenDropdowns) do
 			if type(entry) == "table" and entry.List ~= pressed.entry.List
 				and entry.List and entry.List.Visible then
-				return
+				replaced = true
+				break
 			end
 		end
 
-		pcall(pressed.entry.Apply, pressed.row, true)
+		if not replaced and not alreadyApplied then
+			pcall(pressed.entry.Apply, pressed.row, true)
+		end
+
+		-- LAST LINE OF DEFENCE: a press and release on an option row is a
+		-- pick, and a pick always leaves the list shut. This runs whether the
+		-- row's own handler ran, threw, or was skipped because the list had
+		-- already been unregistered - the only way the list could still be
+		-- visible here is that something went wrong, and leaving it open over
+		-- the page is the one outcome that is never acceptable.
+		local stillOpen = pressed.entry.List
+		if stillOpen and stillOpen.Parent and stillOpen.Visible then
+			pcall(pressed.entry.Close)
+		end
 	end)
 
 	-- Moving or resizing the window would leave a list behind at its old spot.
@@ -2895,7 +2928,7 @@ function BananaHub:Window(GuiConfig)
 					if not applying and not silent and type(cfg.Callback) == "function" then
 						applying = true
 						task.spawn(function()
-							pcall(cfg.Callback, v)
+							BananaHub.RunCallback(cfg.Callback, v)
 							applying = false
 						end)
 					end
@@ -3070,7 +3103,7 @@ function BananaHub:Window(GuiConfig)
 					if not applying and not silent and type(cfg.Callback) == "function" then
 						applying = true
 						task.spawn(function()
-							pcall(cfg.Callback, v)
+							BananaHub.RunCallback(cfg.Callback, v)
 							applying = false
 						end)
 					end
@@ -3256,6 +3289,12 @@ function BananaHub:Window(GuiConfig)
 				-- below from running the same choice twice: it is a counter, not
 				-- a timestamp, so two deliveries in the same instant still differ.
 				local pickCount = 0
+
+				-- Bumped every time the player opens this list. The post-pick
+				-- watchdog below uses it to tell "still shut because the pick
+				-- worked" from "the player deliberately opened it again".
+				local openCount = 0
+
 				local function applyRow(row, force)
 					if not row then return end
 					-- The list closes on the first pick, so a second delivery of
@@ -3266,21 +3305,63 @@ function BananaHub:Window(GuiConfig)
 					-- mid-press by something else, and the choice must still land.
 					if not force and not OptionList.Visible then return end
 					pickCount = pickCount + 1
-					if multi then
-						local list = DropdownFunc.Value or {}
-						local at = table.find(list, row.value)
-						if at then
-							table.remove(list, at)
-						else
-							list[#list + 1] = row.value
-						end
-						DropdownFunc:Set(list)
-					else
-						DropdownFunc:Set(row.value)
-					end
+
 					-- Picking an option EXECUTES the choice, so the list closes
 					-- every time - single or multi.
+					--
+					-- The close is NOT inside the value path. It used to be, and
+					-- any error raised while applying the choice (a feature
+					-- callback, a row rebuild triggered from inside it) skipped
+					-- the close entirely and left the list sitting open over the
+					-- page - which is exactly the "it stays open after I pick"
+					-- bug. Applying and closing are separate steps now, so a
+					-- failing feature can never keep the list up.
+					local applied, err = pcall(function()
+						if multi then
+							local list = DropdownFunc.Value or {}
+							local at = table.find(list, row.value)
+							if at then
+								table.remove(list, at)
+							else
+								list[#list + 1] = row.value
+							end
+							DropdownFunc:Set(list)
+						else
+							DropdownFunc:Set(row.value)
+						end
+					end)
+
+					local stampAtClose = pickCount
+					local opensAtClose = openCount
 					closeList()
+
+					-- WATCHDOG. Picking an option executes the choice, and an
+					-- executing choice must never leave the list hanging over
+					-- the page. One close is not enough: a feature callback can
+					-- rebuild its own rows, re-anchor the list, or write
+					-- Visible itself a few frames later, and the old single
+					-- deferred close missed those. This holds the list shut for
+					-- a short window instead.
+					--
+					-- It stops the instant the player opens the list again
+					-- (openCount changes), so it can never fight the player for
+					-- control - the worst case is that a deliberately reopened
+					-- list stays open, which is correct.
+					task.spawn(function()
+						local deadline = os.clock() + 0.6
+						while os.clock() < deadline do
+							task.wait(0.05)
+							if pickCount ~= stampAtClose or openCount ~= opensAtClose then
+								return
+							end
+							if not OptionList.Parent then return end
+							if OptionList.Visible then closeList() end
+						end
+					end)
+
+					if not applied then
+						warn("[BANANAHUB] dropdown pick failed: " .. tostring(err))
+					end
 				end
 
 				-- Which option row is under one of these points. Used by the
@@ -3375,7 +3456,10 @@ function BananaHub:Window(GuiConfig)
 						rows[#rows + 1] = rowRecord
 
 						rowButton.Activated:Connect(function()
-							applyRow(rowRecord)
+							-- pcall: a row whose handler errors must still close
+							-- the list. applyRow does its own pcall, but the
+							-- click path itself should never propagate.
+							pcall(applyRow, rowRecord)
 						end)
 					end
 
@@ -3442,6 +3526,7 @@ function BananaHub:Window(GuiConfig)
 					if not userOpening then return end
 					reposition()
 					OptionList.CanvasSize = UDim2.new(0, 0, 0, 0)
+					openCount = openCount + 1
 					OptionList.Visible = true
 					UpdateShield()
 				end
@@ -3511,6 +3596,13 @@ function BananaHub:Window(GuiConfig)
 				}
 
 				function DropdownFunc:Set(v, silent)
+					-- Close BEFORE touching any visual state. Setting a value
+					-- must always shut the list, and refreshVisuals runs over
+					-- every row - if that ever errored (a destroyed row, a
+					-- label mid-tween) the close below it would be skipped and
+					-- the list would be left open after a pick.
+					if OptionList.Visible then closeList() end
+
 					if multi then
 						if type(v) == "string" then
 							DropdownFunc.Value = {v}
@@ -3527,15 +3619,10 @@ function BananaHub:Window(GuiConfig)
 						end
 					end
 					ConfigData[configKey] = DropdownFunc.Value
-					refreshVisuals()
-
-					-- Any value change closes the list, including programmatic
-					-- ones (a feature calling dd:Set / dd:SetValue). Executing a
-					-- choice should never leave the panel open over the page.
-					if OptionList.Visible then closeList() end
+					pcall(refreshVisuals)
 
 					if not silent and type(cfg.Callback) == "function" then
-						pcall(cfg.Callback, DropdownFunc.Value)
+						BananaHub.RunCallback(cfg.Callback, DropdownFunc.Value)
 					end
 				end
 
@@ -3673,7 +3760,7 @@ function BananaHub:Window(GuiConfig)
 					InputFunc.Value = v
 					ConfigData[configKey] = v
 					if not silent and type(cfg.Callback) == "function" then
-						pcall(cfg.Callback, v)
+						BananaHub.RunCallback(cfg.Callback, v)
 					end
 				end
 
@@ -3747,7 +3834,7 @@ function BananaHub:Window(GuiConfig)
 					pcall(closeAllDropdowns)
 					if locked then return end
 					if type(cfg.Callback) == "function" then
-						pcall(cfg.Callback)
+						BananaHub.RunCallback(cfg.Callback)
 					end
 				end)
 
@@ -4123,10 +4210,9 @@ end
 --───────────────────────────────────────────────────────────────────────────
 -- KEY TIME  (shared)
 --
--- One implementation, used by the key prompt and by the sidebar badge, so the
--- two can never disagree about a key's remaining life or about the colour it
--- reads in: gold = Lifetime, blue = a timed plan (24h / 7d / 30d), red = out
--- of time.
+-- One implementation, used by the sidebar badge. The prompt itself no longer
+-- draws a key-time row, but it still uses KeyTimeOf's verdict to decide whether
+-- a key the server calls valid has actually run out of time.
 --
 -- Attached to the module table rather than declared as file-level locals: the
 -- main chunk already carries a lot of live locals and every one of them counts
@@ -4207,11 +4293,11 @@ end
 -- prompt has closed. nil until a key is accepted.
 BananaHub.KeyInfo = nil
 
--- Icons for the key's remaining time. Two assets because the state is carried
--- by the icon as well as the colour: a countdown clock for timed plans, a
--- distinct mark for Lifetime. Both are tinted to the state colour, so one
--- asset still reads correctly as blue (timed), gold (lifetime) or red
--- (expired).
+-- Icons for the key's remaining time, used by the sidebar badge. Two assets
+-- because the state is carried by the icon as well as the colour: a countdown
+-- clock for timed plans, a distinct mark for Lifetime. Both are tinted to the
+-- state colour, so one asset still reads correctly as blue (timed), gold
+-- (lifetime) or red (expired).
 BananaHub.KeyIconTimed    = "rbxassetid://105113091239258"
 BananaHub.KeyIconLifetime = "rbxassetid://93661783957662"
 
@@ -4227,7 +4313,8 @@ end
 -- reads as a button that cannot be pressed.
 --
 -- Called by the window so the key's remaining life stays visible for the whole
--- session, not just the 1.2s the prompt is still on screen after acceptance.
+-- session. This is now the ONLY place the key's life is shown - the prompt no
+-- longer has a key-time row - so the pill has to carry it on its own.
 function BananaHub.MakeKeyBadge(parent)
 	local KC = BananaHub.KeyColors
 
@@ -4274,7 +4361,8 @@ function BananaHub.MakeKeyBadge(parent)
 		holder.Visible = true
 
 		-- The sidebar is only ~58px wide on a phone, so this carries the short
-		-- form. The prompt's KEY TIME row has the room to be verbose.
+		-- form: "24D", "LIFETIME". The prompt no longer shows a key-time row at
+		-- all, so this pill is the only place the life of the key is displayed.
 		if state == "expired" then
 			label.Text = "EXPIRED"
 		elseif state == "lifetime" then
@@ -4605,8 +4693,8 @@ function BananaHub:KeyGate(opts)
 			message = r.message or r.reason or r.msg or r.error_description,
 			-- Your schema names the plan column `duration` ("24h"/"7d"/"30d"/
 			-- "lifetime"), not `plan`, and reports revocation via `revoked_at`.
-			-- Accept both so the Key Time row has something to show without the
-			-- RPC having to rename its columns.
+			-- Accept both so the sidebar key pill and the refusal messages have
+			-- something to work with without the RPC renaming its columns.
 			plan = r.plan or r.duration or r.plan_id,
 			planLabel = r.planLabel or r.plan_label or r.duration or r.plan,
 			expiresAt = r.expiresAt or r.expires_at or r.expiry,
@@ -4659,9 +4747,10 @@ function BananaHub:KeyGate(opts)
 	--───────────────────────────────────────────────────────────────────────
 	-- KEY TIME
 	--
-	-- The parsing and colour rules live in BananaHub.KeyTimeOf so the sidebar
-	-- badge shows exactly what the prompt showed. These two locals only adapt
-	-- the prompt's own widgets to it.
+	-- The prompt no longer draws a key-time row, but the STATE it derives still
+	-- decides whether a saved key is let straight through and what the status
+	-- line says when one is refused. The parsing and colour rules live in
+	-- BananaHub.KeyTimeOf, shared with the window's sidebar badge.
 	--───────────────────────────────────────────────────────────────────────
 
 	local function keyTimeOf(res)
@@ -4736,7 +4825,7 @@ function BananaHub:KeyGate(opts)
 	local panel = Instance.new("Frame")
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.Position = UDim2.fromScale(0.5, 0.5)
-	panel.Size = UDim2.fromOffset(360, 294)
+	panel.Size = UDim2.fromOffset(360, 236)
 	panel.BackgroundColor3 = C_BG
 	panel.BorderSizePixel = 0
 	panel.ZIndex = 2
@@ -4805,56 +4894,9 @@ function BananaHub:KeyGate(opts)
 	divider.ZIndex = 3
 	divider.Parent = panel
 
-	-- Device id, shown read-only so the user can copy it into the site if they
-	-- ever need to prove which machine they are on.
-	local hwidLabel = Instance.new("TextLabel")
-	hwidLabel.BackgroundTransparency = 1
-	hwidLabel.Font = Enum.Font.Gotham
-	hwidLabel.Text = "THIS DEVICE (HWID)"
-	hwidLabel.TextColor3 = C_MUTED
-	hwidLabel.TextSize = 10
-	hwidLabel.TextXAlignment = Enum.TextXAlignment.Left
-	hwidLabel.Position = UDim2.new(0, 16, 0, 66)
-	hwidLabel.Size = UDim2.new(1, -100, 0, 12)
-	hwidLabel.ZIndex = 4
-	hwidLabel.Parent = panel
-
-	local copyBtn = Instance.new("TextButton")
-	copyBtn.AutoButtonColor = false
-	copyBtn.BackgroundTransparency = 1
-	copyBtn.Font = Enum.Font.GothamBold
-	copyBtn.Text = "COPY"
-	copyBtn.TextColor3 = C_GOLD
-	copyBtn.TextSize = 10
-	copyBtn.AnchorPoint = Vector2.new(1, 0)
-	copyBtn.Position = UDim2.new(1, -16, 0, 64)
-	copyBtn.Size = UDim2.fromOffset(44, 14)
-	copyBtn.ZIndex = 4
-	copyBtn.Parent = panel
-
-	local hwidBox = Instance.new("TextBox")
-	hwidBox.BackgroundColor3 = C_SURFACE
-	hwidBox.BorderSizePixel = 0
-	hwidBox.ClearTextOnFocus = false
-	hwidBox.Font = Enum.Font.Code
-	hwidBox.Text = hwid
-	hwidBox.TextColor3 = Color3.fromRGB(170, 170, 170)
-	-- 64 hex chars at size 10 does not fit 328px, and a clipped id is worse than
-	-- useless: the user copies it off the screen and it does not match what was
-	-- sent. Shrink the text so the whole digest is always visible, and keep
-	-- COPY as the reliable way to get it out.
-	hwidBox.TextSize = 8
-	hwidBox.TextXAlignment = Enum.TextXAlignment.Left
-	hwidBox.TextEditable = false
-	hwidBox.TextTruncate = Enum.TextTruncate.None
-	hwidBox.Position = UDim2.new(0, 16, 0, 82)
-	hwidBox.Size = UDim2.new(1, -32, 0, 24)
-	hwidBox.ZIndex = 4
-	hwidBox.Parent = panel
-	local hwidCorner = Instance.new("UICorner")
-	hwidCorner.CornerRadius = UDim.new(0, 4)
-	hwidCorner.Parent = hwidBox
-
+	-- Device id is deliberately NOT shown. The player has no use for it: the
+	-- bind is server-side, and the only thing it ever did on screen was add a
+	-- 64-character block of noise nobody reads. Unlinking happens on the site.
 	local keyLabel = Instance.new("TextLabel")
 	keyLabel.BackgroundTransparency = 1
 	keyLabel.Font = Enum.Font.Gotham
@@ -4862,7 +4904,7 @@ function BananaHub:KeyGate(opts)
 	keyLabel.TextColor3 = C_MUTED
 	keyLabel.TextSize = 10
 	keyLabel.TextXAlignment = Enum.TextXAlignment.Left
-	keyLabel.Position = UDim2.new(0, 16, 0, 116)
+	keyLabel.Position = UDim2.new(0, 16, 0, 66)
 	keyLabel.Size = UDim2.new(1, -32, 0, 12)
 	keyLabel.ZIndex = 4
 	keyLabel.Parent = panel
@@ -4870,7 +4912,7 @@ function BananaHub:KeyGate(opts)
 	local inputFrame = Instance.new("Frame")
 	inputFrame.BackgroundColor3 = C_SURFACE
 	inputFrame.BorderSizePixel = 0
-	inputFrame.Position = UDim2.new(0, 16, 0, 132)
+	inputFrame.Position = UDim2.new(0, 16, 0, 82)
 	inputFrame.Size = UDim2.new(1, -32, 0, 34)
 	inputFrame.ZIndex = 3
 	inputFrame.Parent = panel
@@ -4898,43 +4940,10 @@ function BananaHub:KeyGate(opts)
 	inputBox.ZIndex = 4
 	inputBox.Parent = inputFrame
 
-	-- Key time: the plan's remaining life. Icon on the left, coloured text
-	-- beside it, no background or border - it is a status line, not a control,
-	-- and a boxed one reads as something you are meant to click.
-	local timeIcon = Instance.new("ImageLabel")
-	timeIcon.BackgroundTransparency = 1
-	timeIcon.Image = BananaHub.KeyIconTimed
-	timeIcon.ImageColor3 = C_MUTED
-	timeIcon.Position = UDim2.new(0, 16, 0, 174)
-	timeIcon.Size = UDim2.fromOffset(12, 12)
-	timeIcon.ZIndex = 4
-	timeIcon.Parent = panel
-
-	local timeLabel = Instance.new("TextLabel")
-	timeLabel.BackgroundTransparency = 1
-	timeLabel.Font = Enum.Font.Gotham
-	timeLabel.Text = "KEY TIME"
-	timeLabel.TextColor3 = C_MUTED
-	timeLabel.TextSize = 10
-	timeLabel.TextXAlignment = Enum.TextXAlignment.Left
-	timeLabel.Position = UDim2.new(0, 34, 0, 172)
-	timeLabel.Size = UDim2.new(0, 70, 0, 14)
-	timeLabel.ZIndex = 4
-	timeLabel.Parent = panel
-
-	local timeValue = Instance.new("TextLabel")
-	timeValue.BackgroundTransparency = 1
-	timeValue.Font = Enum.Font.GothamBold
-	timeValue.Text = "-"
-	timeValue.TextColor3 = C_MUTED
-	timeValue.TextSize = 10
-	timeValue.TextXAlignment = Enum.TextXAlignment.Right
-	timeValue.TextTruncate = Enum.TextTruncate.AtEnd
-	timeValue.Position = UDim2.new(0, 106, 0, 172)
-	timeValue.Size = UDim2.new(1, -122, 0, 14)
-	timeValue.ZIndex = 4
-	timeValue.Parent = panel
-
+	-- Status line. It replaced the old KEY TIME row: one line of text that says
+	-- what just happened is more useful than a second line of small print, and
+	-- the accepted key's remaining life is shown in the window's sidebar pill
+	-- once this prompt closes.
 	local status = Instance.new("TextLabel")
 	status.BackgroundTransparency = 1
 	status.Font = Enum.Font.Gotham
@@ -4943,7 +4952,7 @@ function BananaHub:KeyGate(opts)
 	status.TextSize = 10
 	status.TextXAlignment = Enum.TextXAlignment.Left
 	status.TextTruncate = Enum.TextTruncate.AtEnd
-	status.Position = UDim2.new(0, 16, 0, 190)
+	status.Position = UDim2.new(0, 16, 0, 130)
 	status.Size = UDim2.new(1, -32, 0, 14)
 	status.ZIndex = 4
 	status.Parent = panel
@@ -4968,11 +4977,11 @@ function BananaHub:KeyGate(opts)
 	end
 
 	local continueBtn = button("CONTINUE",
-		UDim2.new(0, 16, 0, 212), UDim2.new(0.52, -20, 0, 34),
+		UDim2.new(0, 16, 0, 154), UDim2.new(0.52, -20, 0, 34),
 		Color3.fromRGB(255, 255, 255), Color3.fromRGB(10, 10, 10))
 
 	local getKeyBtn = button("GET KEY",
-		UDim2.new(1, -16, 0, 212), UDim2.new(0.44, -12, 0, 34),
+		UDim2.new(1, -16, 0, 154), UDim2.new(0.44, -12, 0, 34),
 		C_SURFACE, C_TEXT)
 	getKeyBtn.AnchorPoint = Vector2.new(1, 0)
 
@@ -4984,7 +4993,7 @@ function BananaHub:KeyGate(opts)
 	footer.TextSize = 9
 	footer.TextXAlignment = Enum.TextXAlignment.Left
 	footer.TextWrapped = true
-	footer.Position = UDim2.new(0, 16, 0, 258)
+	footer.Position = UDim2.new(0, 16, 0, 200)
 	footer.Size = UDim2.new(1, -32, 0, 24)
 	footer.ZIndex = 4
 	footer.Parent = panel
@@ -5007,15 +5016,6 @@ function BananaHub:KeyGate(opts)
 		else
 			status.TextColor3 = C_MUTED
 		end
-	end
-
-	local function setKeyTime(text, colour, state)
-		timeValue.Text = tostring(text or "-")
-		timeValue.TextColor3 = colour or C_MUTED
-		-- Icon carries the same colour and swaps to the Lifetime mark, so the
-		-- row reads as one unit and the state is obvious without reading text.
-		timeIcon.ImageColor3 = colour or C_MUTED
-		timeIcon.Image = BananaHub.KeyIconFor(state)
 	end
 
 	local function stop()
@@ -5044,9 +5044,9 @@ function BananaHub:KeyGate(opts)
 		inputBox.Active = false
 		continueBtn.Active = false
 		continueBtn.Text = "LOADING"
-		-- Long enough to actually read the KEY TIME row that was just filled
-		-- in. At 0.4s the prompt vanished before anyone could see it, which is
-		-- why the key's life now also lives in the sidebar pill.
+		-- Long enough to read the accepted confirmation before the prompt
+		-- closes. The key's remaining life is shown in the sidebar pill once
+		-- the window opens, so there is nothing here to linger for.
 		task.delay(1.2, stop)
 	end
 
@@ -5077,10 +5077,10 @@ function BananaHub:KeyGate(opts)
 			return
 		end
 
-		-- Show the plan's life before deciding anything, so the player can see
-		-- WHY a key was refused when it is simply out of time.
-		local timeText, timeColour, timeState = keyTimeOf(res)
-		setKeyTime(timeText, timeColour, timeState)
+		-- The prompt no longer draws a key-time row, but the derived state still
+		-- decides whether a key the server calls valid has actually run out of
+		-- time, and that has to be checked before accepting it.
+		local _, _, timeState = keyTimeOf(res)
 
 		busy = false
 		if res.ok and timeState ~= "expired" then
@@ -5104,13 +5104,11 @@ function BananaHub:KeyGate(opts)
 		-- Revoked by an admin. There is nothing the player can do in-game, so
 		-- point at the site rather than echoing a bare "Key unavailable".
 		if res.code == "KEY_REVOKED" then
-			setKeyTime("REVOKED", C_ERR, "expired")
 			setStatus("This key was revoked. Check the key site.", "err")
 			return
 		end
 
 		if res.code == "KEY_EXPIRED" then
-			setKeyTime("EXPIRED", C_ERR, "expired")
 			setStatus("Key expired. Renew it on the key site.", "err")
 			return
 		end
@@ -5131,11 +5129,6 @@ function BananaHub:KeyGate(opts)
 	end)
 	conns[#conns + 1] = continueBtn.Activated:Connect(submit)
 	conns[#conns + 1] = closeBtn.Activated:Connect(stop)
-
-	conns[#conns + 1] = copyBtn.Activated:Connect(function()
-		if setclipboard then pcall(function() setclipboard(hwid) end) end
-		setStatus("Device id copied.", "ok")
-	end)
 
 	conns[#conns + 1] = getKeyBtn.Activated:Connect(function()
 		if setclipboard then pcall(function() setclipboard(siteURL) end) end
@@ -5196,10 +5189,8 @@ function BananaHub:KeyGate(opts)
 	if savedExpired then
 		-- The remembered key ran out. Say so on open rather than making the
 		-- player re-type it to find out why they were asked again.
-		setKeyTime("EXPIRED", C_ERR, "expired")
 		setStatus("Your saved key expired. Renew it on the key site.", "err")
 	elseif savedReason then
-		setKeyTime("REVOKED", C_ERR, "expired")
 		setStatus(savedReason, "err")
 	end
 	inputBox:CaptureFocus()
@@ -5221,6 +5212,6 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_22"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_25"
 
 return BananaHub
