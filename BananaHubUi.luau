@@ -14,11 +14,11 @@
     free script never calls it, so the library stays usable without a key.
 ]]
 
--- BANANAHUB_BUILD_BLACK_20
+-- BANANAHUB_BUILD_BLACK_22
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (or an earlier
 -- build, which had no floating open icon) can never be loaded again.
-local BUILD = "black-20"
+local BUILD = "black-22"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -4207,34 +4207,48 @@ end
 -- prompt has closed. nil until a key is accepted.
 BananaHub.KeyInfo = nil
 
--- Builds a small "KEY TIME" pill inside `parent` and returns a refresh
--- function. Called by the window so the key's remaining life stays visible for
--- the whole session, not just the 0.4s the prompt is still on screen after a
--- key is accepted.
+-- Icons for the key's remaining time. Two assets because the state is carried
+-- by the icon as well as the colour: a countdown clock for timed plans, a
+-- distinct mark for Lifetime. Both are tinted to the state colour, so one
+-- asset still reads correctly as blue (timed), gold (lifetime) or red
+-- (expired).
+BananaHub.KeyIconTimed    = "rbxassetid://105113091239258"
+BananaHub.KeyIconLifetime = "rbxassetid://93661783957662"
+
+-- state -> icon asset. Anything that is not a lifetime reads as the clock, so
+-- an unknown state can never render as a permanent key.
+function BananaHub.KeyIconFor(state)
+	if state == "lifetime" then return BananaHub.KeyIconLifetime end
+	return BananaHub.KeyIconTimed
+end
+
+-- Builds the sidebar "key time" line: an icon and coloured text, nothing else.
+-- No plate, no border, no pill - the colour is the signal, and a boxed badge
+-- reads as a button that cannot be pressed.
 --
--- Refreshing is driven by a timer rather than a one-off read: a 24h key must
--- visibly count down, and must turn red the moment it runs out mid-session.
+-- Called by the window so the key's remaining life stays visible for the whole
+-- session, not just the 1.2s the prompt is still on screen after acceptance.
 function BananaHub.MakeKeyBadge(parent)
 	local KC = BananaHub.KeyColors
 
 	local holder = Instance.new("Frame")
 	holder.Name = "KeyTimeBadge"
-	holder.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-	holder.BackgroundTransparency = 0.35
+	holder.BackgroundTransparency = 1
 	holder.BorderSizePixel = 0
 	holder.Size = UDim2.new(1, 0, 0, 16)
 	holder.ZIndex = 100
 	holder.Parent = parent
 
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 4)
-	corner.Parent = holder
-
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = KC.MUTED
-	stroke.Thickness = 1
-	stroke.Transparency = 0.75
-	stroke.Parent = holder
+	local icon = Instance.new("ImageLabel")
+	icon.Name = "Icon"
+	icon.BackgroundTransparency = 1
+	icon.Image = BananaHub.KeyIconTimed
+	icon.ImageColor3 = KC.MUTED
+	icon.AnchorPoint = Vector2.new(0, 0.5)
+	icon.Position = UDim2.new(0, 0, 0.5, 0)
+	icon.Size = UDim2.new(0, 12, 0, 12)
+	icon.ZIndex = 101
+	icon.Parent = holder
 
 	local label = Instance.new("TextLabel")
 	label.BackgroundTransparency = 1
@@ -4242,10 +4256,10 @@ function BananaHub.MakeKeyBadge(parent)
 	label.Text = ""
 	label.TextColor3 = KC.MUTED
 	label.TextSize = 9
-	label.TextXAlignment = Enum.TextXAlignment.Center
+	label.TextXAlignment = Enum.TextXAlignment.Left
 	label.TextTruncate = Enum.TextTruncate.AtEnd
-	label.Size = UDim2.new(1, -8, 1, 0)
-	label.Position = UDim2.new(0, 4, 0, 0)
+	label.Position = UDim2.new(0, 16, 0, 0)
+	label.Size = UDim2.new(1, -16, 1, 0)
 	label.ZIndex = 101
 	label.Parent = holder
 
@@ -4259,19 +4273,19 @@ function BananaHub.MakeKeyBadge(parent)
 		end
 		holder.Visible = true
 
-		-- The sidebar is only ~58px wide on a phone, so the pill carries the
-		-- short form. The prompt's KEY TIME row has the room to be verbose;
-		-- this only has to say which of the three states it is in.
+		-- The sidebar is only ~58px wide on a phone, so this carries the short
+		-- form. The prompt's KEY TIME row has the room to be verbose.
 		if state == "expired" then
-			label.Text = "KEY  EXPIRED"
+			label.Text = "EXPIRED"
 		elseif state == "lifetime" then
-			label.Text = "KEY  LIFETIME"
+			label.Text = "LIFETIME"
 		else
-			label.Text = "KEY  " .. (tostring(text):gsub("%s+LEFT$", ""))
+			label.Text = tostring(text):gsub("%s+LEFT$", "")
 		end
 
 		label.TextColor3 = colour
-		stroke.Color = colour
+		icon.ImageColor3 = colour
+		icon.Image = BananaHub.KeyIconFor(state)
 	end
 
 	refresh()
@@ -4884,8 +4898,18 @@ function BananaHub:KeyGate(opts)
 	inputBox.ZIndex = 4
 	inputBox.Parent = inputFrame
 
-	-- Key time: the plan's remaining life, colour-coded. Sits under the key
-	-- field so it is the first thing read after a key is accepted.
+	-- Key time: the plan's remaining life. Icon on the left, coloured text
+	-- beside it, no background or border - it is a status line, not a control,
+	-- and a boxed one reads as something you are meant to click.
+	local timeIcon = Instance.new("ImageLabel")
+	timeIcon.BackgroundTransparency = 1
+	timeIcon.Image = BananaHub.KeyIconTimed
+	timeIcon.ImageColor3 = C_MUTED
+	timeIcon.Position = UDim2.new(0, 16, 0, 174)
+	timeIcon.Size = UDim2.fromOffset(12, 12)
+	timeIcon.ZIndex = 4
+	timeIcon.Parent = panel
+
 	local timeLabel = Instance.new("TextLabel")
 	timeLabel.BackgroundTransparency = 1
 	timeLabel.Font = Enum.Font.Gotham
@@ -4893,7 +4917,7 @@ function BananaHub:KeyGate(opts)
 	timeLabel.TextColor3 = C_MUTED
 	timeLabel.TextSize = 10
 	timeLabel.TextXAlignment = Enum.TextXAlignment.Left
-	timeLabel.Position = UDim2.new(0, 16, 0, 172)
+	timeLabel.Position = UDim2.new(0, 34, 0, 172)
 	timeLabel.Size = UDim2.new(0, 70, 0, 14)
 	timeLabel.ZIndex = 4
 	timeLabel.Parent = panel
@@ -4906,8 +4930,8 @@ function BananaHub:KeyGate(opts)
 	timeValue.TextSize = 10
 	timeValue.TextXAlignment = Enum.TextXAlignment.Right
 	timeValue.TextTruncate = Enum.TextTruncate.AtEnd
-	timeValue.Position = UDim2.new(0, 86, 0, 172)
-	timeValue.Size = UDim2.new(1, -102, 0, 14)
+	timeValue.Position = UDim2.new(0, 106, 0, 172)
+	timeValue.Size = UDim2.new(1, -122, 0, 14)
 	timeValue.ZIndex = 4
 	timeValue.Parent = panel
 
@@ -4985,9 +5009,13 @@ function BananaHub:KeyGate(opts)
 		end
 	end
 
-	local function setKeyTime(text, colour)
+	local function setKeyTime(text, colour, state)
 		timeValue.Text = tostring(text or "-")
 		timeValue.TextColor3 = colour or C_MUTED
+		-- Icon carries the same colour and swaps to the Lifetime mark, so the
+		-- row reads as one unit and the state is obvious without reading text.
+		timeIcon.ImageColor3 = colour or C_MUTED
+		timeIcon.Image = BananaHub.KeyIconFor(state)
 	end
 
 	local function stop()
@@ -5052,7 +5080,7 @@ function BananaHub:KeyGate(opts)
 		-- Show the plan's life before deciding anything, so the player can see
 		-- WHY a key was refused when it is simply out of time.
 		local timeText, timeColour, timeState = keyTimeOf(res)
-		setKeyTime(timeText, timeColour)
+		setKeyTime(timeText, timeColour, timeState)
 
 		busy = false
 		if res.ok and timeState ~= "expired" then
@@ -5076,13 +5104,13 @@ function BananaHub:KeyGate(opts)
 		-- Revoked by an admin. There is nothing the player can do in-game, so
 		-- point at the site rather than echoing a bare "Key unavailable".
 		if res.code == "KEY_REVOKED" then
-			setKeyTime("REVOKED", C_ERR)
+			setKeyTime("REVOKED", C_ERR, "expired")
 			setStatus("This key was revoked. Check the key site.", "err")
 			return
 		end
 
 		if res.code == "KEY_EXPIRED" then
-			setKeyTime("EXPIRED", C_ERR)
+			setKeyTime("EXPIRED", C_ERR, "expired")
 			setStatus("Key expired. Renew it on the key site.", "err")
 			return
 		end
@@ -5168,10 +5196,10 @@ function BananaHub:KeyGate(opts)
 	if savedExpired then
 		-- The remembered key ran out. Say so on open rather than making the
 		-- player re-type it to find out why they were asked again.
-		setKeyTime("EXPIRED", C_ERR)
+		setKeyTime("EXPIRED", C_ERR, "expired")
 		setStatus("Your saved key expired. Renew it on the key site.", "err")
 	elseif savedReason then
-		setKeyTime("REVOKED", C_ERR)
+		setKeyTime("REVOKED", C_ERR, "expired")
 		setStatus(savedReason, "err")
 	end
 	inputBox:CaptureFocus()
@@ -5193,6 +5221,6 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_20"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_22"
 
 return BananaHub
