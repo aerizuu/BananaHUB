@@ -14,11 +14,11 @@
     free script never calls it, so the library stays usable without a key.
 ]]
 
--- BANANAHUB_BUILD_BLACK_25
+-- BANANAHUB_BUILD_BLACK_26
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (or an earlier
 -- build, which had no floating open icon) can never be loaded again.
-local BUILD = "black-25"
+local BUILD = "black-26"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -2225,11 +2225,22 @@ function BananaHub:Window(GuiConfig)
 	-- { Frame = the row, Toggle = fn that opens or closes that one list }.
 	headerEntryAt = function(points)
 		local current = LayersPageLayout.CurrentPage
+		-- NO PAGE, NO ANSWER. This used to be `not current or ...`, which made
+		-- the page test pass for every header whenever CurrentPage happened to be
+		-- nil - and it IS nil during a tab transition. Every dropdown in the
+		-- window then became a candidate, and the loop below returned whichever
+		-- one came first in creation order. That is a dropdown opening that the
+		-- player never clicked: they tapped the header on page B, and page A's
+		-- dropdown (at the same coordinates) opened instead.
+		--
+		-- Refusing when the page is unknown is the safe direction: the shield
+		-- then just closes the open list instead of opening a different one.
+		if not current then return nil end
 		for _, record in ipairs(AllDropdownHeaders) do
 			local frame = record and record.Frame
 			if frame and frame.Parent and frame:IsDescendantOf(Main)
 				and onScreen(frame) and pointHit(frame, points)
-				and (not current or frame:IsDescendantOf(current)) then
+				and frame:IsDescendantOf(current) then
 				return record
 			end
 		end
@@ -2248,6 +2259,15 @@ function BananaHub:Window(GuiConfig)
 			if type(entry) == "table" and pointHit(entry.List, points) then return end
 		end
 
+		-- Only a press that is genuinely inside the window may open anything.
+		-- The shield is fitted to the page area, but a resize or a tab tween can
+		-- leave its AbsoluteSize stale for a frame, and a press outside the
+		-- window would otherwise still be hit-tested against every header.
+		if not pointHit(Main, points) then
+			closeAllDropdowns()
+			return
+		end
+
 		local record = headerEntryAt(points)
 		local frame = record and record.Frame
 		-- Clicking the header of the list that is already open means "close it",
@@ -2260,7 +2280,14 @@ function BananaHub:Window(GuiConfig)
 			end
 		end
 		closeAllDropdowns()
-		if record and not wasOpen and type(record.Toggle) == "function" then
+		-- Re-open ONLY the header that was actually under the pointer. The old
+		-- code reached here with `record` nil whenever the page test bailed, and
+		-- a nil record simply closed everything - correct - but when the page
+		-- test WRONGLY passed it opened a header on another tab. headerEntryAt
+		-- no longer returns such a record, and the frame is re-checked here so a
+		-- header that moved between the hit test and this line cannot be opened.
+		if record and not wasOpen and type(record.Toggle) == "function"
+			and frame and frame.Parent and onScreen(frame) then
 			pcall(record.Toggle)
 		end
 	end
@@ -2400,6 +2427,24 @@ function BananaHub:Window(GuiConfig)
 			end
 		end
 		UpdateShield()
+	end
+
+	-- A list whose header is no longer on the current page must not stay visible.
+	-- Tab changes and page tweens do not destroy the row, so a list opened on the
+	-- old page would otherwise keep floating over the new one - which reads as a
+	-- dropdown that opened by itself, because its header is nowhere in sight.
+	BananaHub.CloseStrayDropdowns = function()
+		local current = LayersPageLayout.CurrentPage
+		for _, entry in ipairs(OpenDropdowns) do
+			if type(entry) == "table" and entry.Header and entry.List then
+				local hdr = entry.Header
+				local gone = not hdr.Parent
+					or (current ~= nil and not hdr:IsDescendantOf(current))
+				if gone and entry.List.Visible then
+					pcall(entry.Close)
+				end
+			end
+		end
 	end
 
 	-- Run the sweep whenever the window geometry changes: those are the moments
@@ -2577,8 +2622,17 @@ function BananaHub:Window(GuiConfig)
 		TabButton.Activated:Connect(function()
 			CircleClick(TabButton, Mouse.X, Mouse.Y)
 			-- A floating dropdown list is anchored to a row on the old page, so
-			-- it must not survive a tab change.
+			-- it must not survive a tab change. CloseDropdowns runs again a few
+			-- frames later because the page tween below keeps CurrentPage in
+			-- motion for 0.3s, and a list opened during that window would
+			-- otherwise outlive the tab it belongs to.
 			pcall(function() GuiFunc.CloseDropdowns() end)
+			task.spawn(function()
+				for _ = 1, 6 do
+					task.wait(0.05)
+					pcall(function() GuiFunc.CloseDropdowns() end)
+				end
+			end)
 			local FrameChoose
 			for _, s in ipairs(ScrollTab:GetChildren()) do
 				for _, v in ipairs(s:GetChildren()) do
@@ -3556,8 +3610,24 @@ function BananaHub:Window(GuiConfig)
 
 				-- One place that opens or closes this list, shared by the header's
 				-- own click and by the window's click shield.
+				--
+				-- DEBOUNCED. A single physical press can reach this twice: the
+				-- header's own Activated fires, and the shield's InputBegan also
+				-- resolves the same press to this same header. Both used to run,
+				-- which meant "open" was immediately followed by "close" - or, if
+				-- the order went the other way, a closed list was toggled open by
+				-- the second delivery. That is the dropdown that appears to open
+				-- by itself.
+				--
+				-- 0.18s is long enough to swallow the duplicate delivery (they are
+				-- in the same frame or the next) and far too short to block a
+				-- player who closes a list and deliberately reopens it.
+				local lastToggleAt = 0
 				local function toggleList()
 					if locked then return end
+					local now = os.clock()
+					if now - lastToggleAt < 0.18 then return end
+					lastToggleAt = now
 
 					-- If THIS list is already open, the click closes it. Checking
 					-- this first matters: the "close every other dropdown" pass
@@ -5212,6 +5282,6 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_25"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_26"
 
 return BananaHub
