@@ -14,11 +14,11 @@
     free script never calls it, so the library stays usable without a key.
 ]]
 
--- BANANAHUB_BUILD_BLACK_26
+-- BANANAHUB_BUILD_BLACK_27
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (or an earlier
 -- build, which had no floating open icon) can never be loaded again.
-local BUILD = "black-26"
+local BUILD = "black-27-search"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -1571,6 +1571,31 @@ function BananaHub:Window(GuiConfig)
 	DeviceLine.Parent = PlayerFooter
 	DeviceLine.Visible = not isCompact()
 
+	-- ---------------------------------------------------------------
+	-- Search index
+	--
+	-- Every tab, section and widget registers itself here as it is built, so the
+	-- search box can filter the window from data instead of by walking the GUI
+	-- tree. Titles are what the player reads, so titles are what gets matched.
+	--
+	-- Held in ONE table rather than as separate locals: GuiFunc:Window already
+	-- holds a great many live locals and each one counts against Luau's
+	-- per-function register limit.
+	--
+	-- ApplySearch is forward-declared here because the box below is built with
+	-- the sidebar, long before the widget factories it filters exist. The
+	-- TextBox handler resolves the real function at call time rather than
+	-- capturing a nil; the body is assigned further down.
+	-- ---------------------------------------------------------------
+	local SearchState = {
+		Query = "",
+		Widgets = {},
+		Sections = {},
+		Tabs = {},
+		NoResults = nil,
+	}
+	local ApplySearch
+
 	local ScrollTab = Instance.new("ScrollingFrame")
 	local UIListLayout = Instance.new("UIListLayout")
 
@@ -1587,10 +1612,165 @@ function BananaHub:Window(GuiConfig)
 	ScrollTab.ClipsDescendants = true
 	ScrollTab.BackgroundTransparency = 0.999
 	-- 50px normally clears the player footer; with the key pill in play the
-	-- list must stop above it instead of scrolling underneath.
-	ScrollTab.Size = UDim2.new(1, 0, 1, (BananaHub.KeyInfo ~= nil) and -66 or -50)
+	-- list must stop above it instead of scrolling underneath. The search box
+	-- adds a further 30px at the top, so the list starts below it.
+	ScrollTab.Position = UDim2.new(0, 3, 0, 34)
+	ScrollTab.Size = UDim2.new(1, 0, 1, ((BananaHub.KeyInfo ~= nil) and -100 or -84))
 	ScrollTab.Name = "ScrollTab"
 	ScrollTab.Parent = LayersTab
+
+	-- ---------------------------------------------------------------
+	-- Search box
+	--
+	-- Sits at the top of the sidebar, above the tab list, and filters what the
+	-- window shows as the player types. Drawn from frames like the rest of the
+	-- interface: a rounded SURFACE_SOFT pill, a magnifier glyph built from a
+	-- ring plus a rotated bar, a TextBox and a clear button.
+	--
+	-- The magnifier is built rather than an asset id so it cannot come out blank
+	-- if the id is wrong or moderated, the same reasoning as the padlock and the
+	-- device glyphs above.
+	-- ---------------------------------------------------------------
+	local SearchBox = Instance.new("Frame")
+	SearchBox.Name = "SearchBox"
+	SearchBox.BackgroundColor3 = SURFACE_SOFT
+	SearchBox.BackgroundTransparency = 0.25
+	SearchBox.BorderSizePixel = 0
+	SearchBox.Position = UDim2.new(0, 3, 0, 4)
+	SearchBox.Size = UDim2.new(1, -12, 0, 26)
+	SearchBox.Parent = LayersTab
+
+	-- Corner, hairline border and magnifier glyph. Wrapped in a do-block so
+	-- these five decoration handles do not each cost a register for the whole
+	-- of GuiFunc:Window, which is already close to Luau's 200-local limit.
+	-- Only SearchBox, SearchInput and SearchClear are needed afterwards.
+	do
+		local Corner = Instance.new("UICorner")
+		Corner.CornerRadius = UDim.new(0, 5)
+		Corner.Parent = SearchBox
+
+		local Stroke = Instance.new("UIStroke")
+		Stroke.Color = Color3.fromRGB(255, 255, 255)
+		Stroke.Thickness = 1
+		Stroke.Transparency = 0.88
+		Stroke.Parent = SearchBox
+
+		-- Magnifier: a hollow ring with a short bar angled out of its lower
+		-- right. Built from frames rather than an asset id so it cannot come
+		-- out blank if the id is wrong or moderated.
+		local Ring = Instance.new("Frame")
+		Ring.Name = "GlassRing"
+		Ring.BackgroundTransparency = 1
+		Ring.Position = UDim2.new(0, 8, 0.5, -4)
+		Ring.Size = UDim2.new(0, 9, 0, 9)
+		Ring.Parent = SearchBox
+
+		local RingCorner = Instance.new("UICorner")
+		RingCorner.CornerRadius = UDim.new(1, 0)
+		RingCorner.Parent = Ring
+
+		local RingStroke = Instance.new("UIStroke")
+		RingStroke.Color = Color3.fromRGB(150, 150, 150)
+		RingStroke.Thickness = 1.4
+		RingStroke.Parent = Ring
+
+		local Handle = Instance.new("Frame")
+		Handle.Name = "GlassHandle"
+		Handle.BackgroundColor3 = Color3.fromRGB(150, 150, 150)
+		Handle.BorderSizePixel = 0
+		Handle.AnchorPoint = Vector2.new(0, 0.5)
+		Handle.Position = UDim2.new(0, 16, 0.5, 2)
+		Handle.Size = UDim2.new(0, 5, 0, 1)
+		Handle.Rotation = 45
+		Handle.Parent = SearchBox
+
+		-- Phone rail is only 76-96px wide, so the glyph shrinks with it.
+		if isCompact() then
+			Ring.Position = UDim2.new(0, 7, 0.5, -3)
+			Ring.Size = UDim2.new(0, 7, 0, 7)
+			Handle.Position = UDim2.new(0, 13, 0.5, 2)
+			Handle.Size = UDim2.new(0, 4, 0, 1)
+		end
+	end
+
+	local SearchInput = Instance.new("TextBox")
+	SearchInput.Name = "SearchInput"
+	SearchInput.Font = Enum.Font.Gotham
+	SearchInput.Text = ""
+	SearchInput.PlaceholderText = "Search..."
+	SearchInput.PlaceholderColor3 = Color3.fromRGB(130, 130, 130)
+	SearchInput.TextColor3 = Color3.fromRGB(231, 231, 231)
+	SearchInput.TextSize = 12
+	SearchInput.TextXAlignment = Enum.TextXAlignment.Left
+	SearchInput.BackgroundTransparency = 1
+	SearchInput.BorderSizePixel = 0
+	SearchInput.ClearTextOnFocus = false
+	SearchInput.Position = UDim2.new(0, 26, 0, 0)
+	SearchInput.Size = UDim2.new(1, -46, 1, 0)
+	SearchInput.Parent = SearchBox
+
+	-- Clear button. Hidden until there is something to clear, so an empty box
+	-- shows only the placeholder and the glyph.
+	local SearchClear = Instance.new("TextButton")
+	SearchClear.Name = "SearchClear"
+	SearchClear.Text = "x"
+	SearchClear.Font = Enum.Font.GothamBold
+	SearchClear.TextColor3 = Color3.fromRGB(150, 150, 150)
+	SearchClear.TextSize = 12
+	SearchClear.BackgroundTransparency = 1
+	SearchClear.AutoButtonColor = false
+	SearchClear.AnchorPoint = Vector2.new(1, 0.5)
+	SearchClear.Position = UDim2.new(1, -4, 0.5, 0)
+	SearchClear.Size = UDim2.new(0, 18, 0, 18)
+	SearchClear.Visible = false
+	SearchClear.Parent = SearchBox
+
+	-- Phone rail: shrink the text and the clear button to match the glyph.
+	if isCompact() then
+		SearchBox.Size = UDim2.new(1, -8, 0, 24)
+		SearchInput.TextSize = 10
+		SearchInput.Position = UDim2.new(0, 20, 0, 0)
+		SearchInput.Size = UDim2.new(1, -36, 1, 0)
+		SearchClear.Position = UDim2.new(1, -2, 0.5, 0)
+		SearchClear.Size = UDim2.new(0, 14, 0, 14)
+		SearchClear.TextSize = 10
+	end
+
+	SearchInput:GetPropertyChangedSignal("Text"):Connect(function()
+		SearchState.Query = SearchInput.Text or ""
+		SearchClear.Visible = SearchState.Query ~= ""
+		-- Resolved at call time: ApplySearch is only assigned once the widget
+		-- factories below exist, and the box is built before them.
+		if ApplySearch then ApplySearch(SearchState.Query) end
+	end)
+
+	-- Focusing the box must not also trigger the Insert hotkey handler or a
+	-- dropdown close, so the box stops its own input from bubbling.
+	SearchInput.Focused:Connect(function()
+		pcall(function() GuiFunc.CloseDropdowns() end)
+	end)
+
+	SearchClear.Activated:Connect(function()
+		SearchInput.Text = ""
+		if ApplySearch then ApplySearch("") end
+	end)
+
+	-- Empty-state card. Shown over the page when a query matches nothing, so a
+	-- search with no hits reads as "nothing found" instead of an empty window.
+	local NoResults = Instance.new("TextLabel")
+	NoResults.Name = "NoResults"
+	NoResults.Font = Enum.Font.Gotham
+	NoResults.Text = "No results"
+	NoResults.TextColor3 = Color3.fromRGB(120, 120, 120)
+	NoResults.TextSize = 13
+	NoResults.BackgroundTransparency = 1
+	NoResults.AnchorPoint = Vector2.new(0.5, 0.5)
+	NoResults.Position = UDim2.new(0.5, 0, 0.5, 0)
+	NoResults.Size = UDim2.new(1, -20, 0, 20)
+	NoResults.ZIndex = 10
+	NoResults.Visible = false
+	NoResults.Parent = Layers
+	SearchState.NoResults = NoResults
 
 	UIListLayout.Padding = UDim.new(0, 2)
 	UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -2048,6 +2228,167 @@ function BananaHub:Window(GuiConfig)
 	-- header the player actually aimed at. Without this, switching from one
 	-- open dropdown to another would take two clicks.
 	local AllDropdownHeaders = {}
+
+	-- ApplySearch is declared up with the sidebar (see the search box), because
+	-- the TextBox that calls it is built long before this point. Only the body
+	-- is assigned here, once the index tables it sweeps already exist.
+	ApplySearch = function(rawQuery)
+		local q = string.lower(tostring(rawQuery or ""))
+		q = q:gsub("^%s+", ""):gsub("%s+$", "")
+
+		-- Empty query: everything back to normal, no page jump.
+		if q == "" then
+			for _, rec in ipairs(SearchState.Widgets) do
+				if rec.Frame then rec.Frame.Visible = true end
+			end
+			for _, rec in ipairs(SearchState.Sections) do
+				if rec.Frame then rec.Frame.Visible = true end
+			end
+			for _, rec in ipairs(SearchState.Tabs) do
+				if rec.Entry then rec.Entry.Visible = true end
+			end
+			if SearchState.NoResults then SearchState.NoResults.Visible = false end
+			-- Sections size themselves from their visible children, so every one
+			-- has to be re-measured after rows come back. Any section the filter
+			-- opened is closed again here, so clearing the box leaves the window
+			-- exactly as the player had it.
+			for _, rec in ipairs(SearchState.Sections) do
+				if type(rec.Restore) == "function" then pcall(rec.Restore) end
+				if type(rec.Refresh) == "function" then pcall(rec.Refresh) end
+			end
+			return
+		end
+
+		-- Row-level pass first: a row is shown only when its own title matches.
+		-- A section-title match can reveal rows again below, which is why the
+		-- section pass runs after this one.
+		for _, rec in ipairs(SearchState.Widgets) do
+			local hit = rec.Lower and rec.Lower:find(q, 1, true) ~= nil
+			if rec.Frame then rec.Frame.Visible = hit == true end
+			rec.Matched = hit == true
+		end
+
+		-- Section pass: keep a section if its title matches or any row inside it
+		-- survived. Rows are grouped through rec.Section so this stays a single
+		-- sweep rather than a nested search.
+		local sectionHasRow = {}
+		for _, rec in ipairs(SearchState.Widgets) do
+			if rec.Matched and rec.Section then
+				sectionHasRow[rec.Section] = true
+			end
+		end
+		local tabHasSection = {}
+		for _, rec in ipairs(SearchState.Sections) do
+			local titleHit = rec.Lower and rec.Lower:find(q, 1, true) ~= nil
+			if titleHit then
+				-- Section name matched: reveal every row under it.
+				for _, w in ipairs(rec.Widgets or {}) do
+					if w.Frame then w.Frame.Visible = true end
+					w.Matched = true
+					sectionHasRow[rec.Frame] = true
+				end
+			end
+			local show = titleHit or sectionHasRow[rec.Frame] == true
+			if rec.Frame then rec.Frame.Visible = show end
+			if show and rec.Tab then tabHasSection[rec.Tab] = true end
+		end
+
+		-- Tab pass: a tab keeps its sidebar entry if it has a surviving section
+		-- or its own name matched. A tab-name match reveals the whole tab, which
+		-- is why the sections are swept again below.
+		--
+		-- Tab records key on `Entry` (the sidebar row), not `Frame`: the page
+		-- frame is deliberately never hidden, so it is not the tab's identity.
+		local tabTitleHit = {}
+		local firstMatchingOrder = nil
+		for _, rec in ipairs(SearchState.Tabs) do
+			local titleHit = rec.Lower and rec.Lower:find(q, 1, true) ~= nil
+			if titleHit and rec.Entry then tabTitleHit[rec.Entry] = true end
+			local show = titleHit or tabHasSection[rec.Entry] == true
+			if show and firstMatchingOrder == nil then
+				firstMatchingOrder = rec.Order
+			end
+			if rec.Entry then rec.Entry.Visible = show end
+		end
+
+		-- Second section pass for tab-name matches: every section of a matched
+		-- tab comes back, and every row inside those sections with it.
+		for _, rec in ipairs(SearchState.Sections) do
+			if rec.Tab and tabTitleHit[rec.Tab] then
+				if rec.Frame then rec.Frame.Visible = true end
+				for _, w in ipairs(rec.Widgets or {}) do
+					if w.Frame then w.Frame.Visible = true end
+					w.Matched = true
+				end
+			end
+		end
+
+		-- Sections size themselves from their visible children, so each one is
+		-- re-measured after its rows have been hidden or revealed. A section that
+		-- is going to show anything is also opened: a collapsed section would
+		-- hide the very rows the search just matched.
+		for _, rec in ipairs(SearchState.Sections) do
+			if rec.Frame and rec.Frame.Visible then
+				if type(rec.Expand) == "function" then pcall(rec.Expand) end
+			elseif type(rec.Restore) == "function" then
+				pcall(rec.Restore)
+			end
+			if type(rec.Refresh) == "function" then pcall(rec.Refresh) end
+		end
+
+		local anything = firstMatchingOrder ~= nil
+		if SearchState.NoResults then SearchState.NoResults.Visible = not anything end
+		if not anything then return end
+
+		-- Jump only when the page the player is looking at has nothing to show.
+		-- Staying put when the current page already matches keeps typing from
+		-- yanking the view around on every keystroke.
+		local current = LayersPageLayout.CurrentPage
+		local currentOrder = current and current.LayoutOrder or nil
+		local currentHasContent = false
+		for _, rec in ipairs(SearchState.Tabs) do
+			if rec.Order == currentOrder and rec.Entry and rec.Entry.Visible then
+				currentHasContent = true
+				break
+			end
+		end
+		if not currentHasContent and firstMatchingOrder ~= nil then
+			-- A floating list is anchored to a row on the old page, so it must
+			-- not survive the jump. Same rule the tab click handler follows.
+			pcall(function() GuiFunc.CloseDropdowns() end)
+			pcall(function() LayersPageLayout:JumpToIndex(firstMatchingOrder) end)
+			-- The page moved, so the sidebar's accent bar and the title have to
+			-- follow it, or the highlight stays on a tab the search just hid
+			-- and the window reads as "no tab selected".
+			--
+			-- There is exactly ONE ChooseFrame in the sidebar; the tab handler
+			-- re-parents it rather than creating one per tab. So this moves the
+			-- same instance instead of looking for a copy inside the target.
+			local choose
+			for _, rec in ipairs(SearchState.Tabs) do
+				if rec.Entry then
+					for _, child in ipairs(rec.Entry:GetChildren()) do
+						if child.Name == "ChooseFrame" then
+							choose = child
+							break
+						end
+					end
+				end
+				if choose then break end
+			end
+			for _, rec in ipairs(SearchState.Tabs) do
+				if rec.Order == firstMatchingOrder then
+					if choose and rec.Entry then
+						choose.Parent = rec.Entry
+						choose.Position = UDim2.new(0, 0, 0, 5)
+						choose.Size = UDim2.new(0, 3, 0, 20)
+					end
+					pcall(function() NameTab.Text = rec.Name end)
+					break
+				end
+			end
+		end
+	end
 
 	-- Everything below is declared here and assigned a little further down,
 	-- because the pieces refer to each other: the shield needs the header list,
@@ -2584,6 +2925,17 @@ function BananaHub:Window(GuiConfig)
 		TabName.Name = "TabName"
 		TabName.Parent = Tab
 
+		-- Register with the search index. `Entry` is the sidebar row that gets
+		-- hidden; the page frame itself is never hidden, because UIPageLayout
+		-- counts every child and a hidden page would put JumpToIndex off by one.
+		SearchState.Tabs[#SearchState.Tabs + 1] = {
+			Name  = tabName,
+			Lower = string.lower(tabName),
+			Order = order,
+			Entry = Tab,
+			Page  = ScrolLayers,
+		}
+
 		FeatureImg.BackgroundTransparency = 0.999
 		FeatureImg.BorderSizePixel = 0
 		FeatureImg.Position = UDim2.new(0, 9, 0, 7)
@@ -2807,7 +3159,12 @@ function BananaHub:Window(GuiConfig)
 				local total = 38
 				for _, v in ipairs(SectionAdd:GetChildren()) do
 					if v.Name ~= "UIListLayout" and v.Name ~= "UICorner" then
-						total = total + v.Size.Y.Offset + 3
+						-- Hidden rows take no space: UIListLayout skips them, so
+						-- counting them here would leave the section taller than
+						-- its contents and put a gap under a filtered page.
+						if v.Visible then
+							total = total + v.Size.Y.Offset + 3
+						end
 					end
 				end
 				local tweenInfo = TweenInfo.new(ANIM_TIME, ANIM_STYLE, ANIM_DIR)
@@ -2863,6 +3220,73 @@ function BananaHub:Window(GuiConfig)
 			end
 
 			local Items = {}
+
+			-- Section record for the search index. `Widgets` is filled in by
+			-- addRow below, so a section-title match can reveal its whole
+			-- contents without re-walking the GUI tree.
+			local SectionRecord = {
+				Name    = title,
+				Lower   = string.lower(title),
+				Frame   = Section,
+				Widgets = {},
+				Tab     = Tab,
+			}
+			SearchState.Sections[#SearchState.Sections + 1] = SectionRecord
+
+			-- Exposed so ApplySearch can resize a section after hiding rows in it.
+			-- Assigned here rather than beside UpdateSizeSection because the
+			-- record does not exist yet at that point in the file.
+			SectionRecord.Refresh = UpdateSizeSection
+
+			-- A collapsed section would hide the very rows a search just matched,
+			-- so the filter needs a way to open one. AutoOpened remembers that
+			-- the filter - not the player - opened it, so clearing the box can
+			-- put the section back the way it was instead of leaving every
+			-- section expanded.
+			function SectionRecord.Expand()
+				if OpenSection then return end
+				OpenSection = true
+				SectionRecord.AutoOpened = true
+				TweenService:Create(SectionTitle, TweenInfo.new(0.2), { TextColor3 = GuiConfig.Color }):Play()
+				TweenService:Create(FeatureImg2, TweenInfo.new(ANIM_TIME, ANIM_STYLE, ANIM_DIR), { Rotation = 0 }):Play()
+				UpdateSizeSection()
+				task.delay(ANIM_TIME, UpdateSizeScroll)
+			end
+
+			function SectionRecord.Restore()
+				if not SectionRecord.AutoOpened then return end
+				SectionRecord.AutoOpened = nil
+				if not OpenSection then return end
+				OpenSection = false
+				TweenService:Create(SectionTitle, TweenInfo.new(0.2), { TextColor3 = Color3.fromRGB(231, 231, 231) }):Play()
+				TweenService:Create(FeatureImg2, TweenInfo.new(ANIM_TIME, ANIM_STYLE, ANIM_DIR), { Rotation = -90 }):Play()
+				TweenService:Create(Section, TweenInfo.new(ANIM_TIME, ANIM_STYLE, ANIM_DIR), { Size = UDim2.new(1, 1, 0, 30) }):Play()
+				TweenService:Create(SectionDecideFrame, TweenInfo.new(ANIM_TIME, ANIM_STYLE, ANIM_DIR), { Size = UDim2.new(0, 0, 0, 2) }):Play()
+				task.delay(ANIM_TIME, UpdateSizeScroll)
+			end
+
+			-- Called by every widget factory once its row exists. `rec.Frame` is
+			-- the row that gets hidden; `rec.Section` links it back for the
+			-- section pass.
+			local function addRow(widgetTitle, frame)
+				local rec = {
+					Name    = widgetTitle,
+					Lower   = string.lower(tostring(widgetTitle or "")),
+					Frame   = frame,
+					Section = Section,
+				}
+				SearchState.Widgets[#SearchState.Widgets + 1] = rec
+				SectionRecord.Widgets[#SectionRecord.Widgets + 1] = rec
+				-- A row added while a search is live must obey it immediately,
+				-- otherwise a tab built after the player typed would show
+				-- everything. The whole filter is re-run rather than just this
+				-- row: section and tab visibility depend on the row set, so a
+				-- per-row decision alone would leave an empty section on screen.
+				if SearchState.Query ~= "" and ApplySearch then
+					ApplySearch(SearchState.Query)
+				end
+				return rec
+			end
 
 			function Items:Space()
 				addSpacer(SectionAdd, nextOrder())
@@ -3004,6 +3428,7 @@ function BananaHub:Window(GuiConfig)
 				end
 
 				ToggleFunc:Set(ToggleFunc.Value, true)
+				addRow(widgetTitle, Toggle)
 				return registerElement(configKey, ToggleFunc)
 			end
 
@@ -3207,6 +3632,7 @@ function BananaHub:Window(GuiConfig)
 					RenderLockedRow(Slider, SliderTitle, widgetTitle, SectionAdd)
 				end
 
+				addRow(widgetTitle, Slider)
 				return registerElement(configKey, SliderFunc)
 			end
 
@@ -3757,6 +4183,7 @@ function BananaHub:Window(GuiConfig)
 					RenderLockedRow(Dropdown, DropdownTitle, widgetTitle, SectionAdd)
 				end
 
+				addRow(widgetTitle, Dropdown)
 				return registerElement(configKey, DropdownFunc)
 			end
 
@@ -3848,6 +4275,7 @@ function BananaHub:Window(GuiConfig)
 				-- The Soreya webhook code reaches into the widget to find its
 				-- TextBox (live URL sync). Expose the row frame like WindUI does.
 				InputFunc.ElementFrame = Input
+				addRow(widgetTitle, Input)
 				return registerElement(configKey, InputFunc)
 			end
 
@@ -3912,6 +4340,7 @@ function BananaHub:Window(GuiConfig)
 					RenderLockedRow(Button, ButtonLabel, widgetTitle, SectionAdd)
 				end
 
+				addRow(widgetTitle, Button)
 				return ButtonFunc
 			end
 
@@ -3969,6 +4398,7 @@ function BananaHub:Window(GuiConfig)
 				end
 
 				ParagraphFunc:SetContent(body)
+				addRow(widgetTitle, Paragraph)
 				return ParagraphFunc
 			end
 
@@ -5282,6 +5712,6 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_26"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_27"
 
 return BananaHub
