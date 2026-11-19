@@ -11,7 +11,9 @@
     runs unchanged, while the window itself is the Banana Hub interface.
 
     BananaHub:KeyGate(opts) is the premium licence check. It is opt-in: the
-    free script never calls it, so the library stays usable without a key.
+    free Soreya build never calls it, so the library stays usable without a key.
+    The premium builds (Soreya Premium, DDS, Violence District) all call it
+    before they create their window.
 ]]
 
 -- BANANAHUB_BUILD_BLACK_27
