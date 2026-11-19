@@ -1,7 +1,8 @@
 local VERSION  = "0.1"
 local HUB_NAME = "Banana HUB"
 local GAMES = {
-    [118517641508250]      = "https://raw.githubusercontent.com/aerizuu/ChocoHUB/refs/heads/main/soreyaprem.luau",
+    [118517641508250]      = "https://raw.githubusercontent.com/aerizuu/BananaHUB/refs/heads/main/soreyaprem.luau",
+    [131378148336503]     = "https://raw.githubusercontent.com/aerizuu/BananaHUB/refs/heads/main/BananaDDS.luau",
 }
 
 local function log(msg)
