@@ -14,11 +14,11 @@
     free script never calls it, so the library stays usable without a key.
 ]]
 
--- BANANAHUB_BUILD_BLACK_27
+-- BANANAHUB_BUILD_BLACK_28
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (or an earlier
 -- build, which had no floating open icon) can never be loaded again.
-local BUILD = "black-27-search"
+local BUILD = "black-28-stats"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -4402,6 +4402,75 @@ function BananaHub:Window(GuiConfig)
 				return ParagraphFunc
 			end
 
+			-- A compact "title | value" row. Unlike Paragraph it keeps ONE fixed
+			-- height, so a live readout (catch stats, counters) can rewrite its
+			-- value every second without the section resizing under the player.
+			function Items:Label(cfg)
+				cfg = cfg or {}
+				local widgetTitle = tostring(cfg.Title or "Label")
+				local value = tostring(cfg.Value or cfg.Desc or "")
+
+				local Label = Instance.new("Frame")
+				local UICorner21 = Instance.new("UICorner")
+				local LabelTitle = Instance.new("TextLabel")
+				local LabelValue = Instance.new("TextLabel")
+
+				Label.BackgroundColor3 = SURFACE
+				Label.BackgroundTransparency = 0.2
+				Label.BorderSizePixel = 0
+				Label.LayoutOrder = nextOrder()
+				Label.Size = UDim2.new(1, 0, 0, 30)
+				Label.Name = "Label"
+				Label.Parent = SectionAdd
+
+				UICorner21.CornerRadius = UDim.new(0, 4)
+				UICorner21.Parent = Label
+
+				LabelTitle.Font = Enum.Font.GothamBold
+				LabelTitle.Text = widgetTitle
+				LabelTitle.TextColor3 = Color3.fromRGB(231, 231, 231)
+				LabelTitle.TextSize = 13
+				LabelTitle.TextXAlignment = Enum.TextXAlignment.Left
+				LabelTitle.TextTruncate = Enum.TextTruncate.AtEnd
+				LabelTitle.BackgroundTransparency = 1
+				LabelTitle.Position = UDim2.new(0, 10, 0, 0)
+				LabelTitle.Size = UDim2.new(0.5, -15, 1, 0)
+				LabelTitle.Name = "LabelTitle"
+				LabelTitle.Parent = Label
+
+				LabelValue.Font = Enum.Font.GothamBold
+				LabelValue.Text = value
+				LabelValue.TextColor3 = GuiConfig.Color
+				LabelValue.TextSize = 13
+				LabelValue.TextXAlignment = Enum.TextXAlignment.Right
+				LabelValue.TextTruncate = Enum.TextTruncate.AtEnd
+				LabelValue.BackgroundTransparency = 1
+				LabelValue.AnchorPoint = Vector2.new(1, 0)
+				LabelValue.Position = UDim2.new(1, -10, 0, 0)
+				LabelValue.Size = UDim2.new(0.5, -15, 1, 0)
+				LabelValue.Name = "LabelValue"
+				LabelValue.Parent = Label
+
+				local LabelFunc = {Type = "Label", Value = value}
+
+				function LabelFunc:Set(v)
+					value = tostring(v)
+					LabelFunc.Value = value
+					LabelValue.Text = value
+				end
+
+				function LabelFunc.SetValue(self, v)
+					LabelFunc:Set(v)
+				end
+
+				function LabelFunc:SetTitle(text)
+					LabelTitle.Text = tostring(text)
+				end
+
+				addRow(widgetTitle, Label)
+				return LabelFunc
+			end
+
 			CountSection = CountSection + 1
 			UpdateSizeSection()
 			return Items
@@ -4417,7 +4486,7 @@ function BananaHub:Window(GuiConfig)
 			return defaultSection
 		end
 
-		for _, name in ipairs({"Toggle", "Slider", "Dropdown", "Input", "Button", "Paragraph", "Space"}) do
+		for _, name in ipairs({"Toggle", "Slider", "Dropdown", "Input", "Button", "Paragraph", "Label", "Space"}) do
 			Tabs[name] = function(_, cfg)
 				local sec = section()
 				return sec[name](sec, cfg)
@@ -5712,6 +5781,6 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_27"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_28"
 
 return BananaHub
