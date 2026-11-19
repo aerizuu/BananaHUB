@@ -2453,7 +2453,9 @@ function BananaHub:Window(GuiConfig)
 		local ok, err = pcall(fn, ...)
 		pcall(closeAllDropdowns)
 		if not ok then
-			warn("[BANANAHUB] widget callback failed: " .. tostring(err))
+			-- Silent: the scripts that use this library print nothing, so a
+			-- failed widget callback is recorded rather than announced.
+			BananaHub.LastCallbackError = tostring(err)
 		end
 	end
 
@@ -3683,6 +3685,26 @@ function BananaHub:Window(GuiConfig)
 				DropdownTitle.Name = "DropdownTitle"
 				DropdownTitle.Parent = Dropdown
 
+				-- Optional hint under the dropdown title. Opt-in, exactly like the
+				-- Button desc above: no Desc keeps the original 46px row.
+				local dropdownDesc = cfg.Desc or cfg.Content
+				if dropdownDesc and tostring(dropdownDesc) ~= "" then
+					Dropdown.Size = UDim2.new(1, 0, 0, 58)
+					DropdownTitle.Size = UDim2.new(1, -180, 0, 13)
+					local DropdownDesc = Instance.new("TextLabel")
+					DropdownDesc.Font = Enum.Font.Gotham
+					DropdownDesc.Text = tostring(dropdownDesc)
+					DropdownDesc.TextColor3 = Color3.fromRGB(150, 150, 150)
+					DropdownDesc.TextSize = 11
+					DropdownDesc.TextXAlignment = Enum.TextXAlignment.Left
+					DropdownDesc.BackgroundTransparency = 1
+					DropdownDesc.Position = UDim2.new(0, 10, 0, 23)
+					DropdownDesc.Size = UDim2.new(1, -180, 0, 12)
+					DropdownDesc.TextTruncate = Enum.TextTruncate.AtEnd
+					DropdownDesc.Name = "DropdownDesc"
+					DropdownDesc.Parent = Dropdown
+				end
+
 				SelectOptionsFrame.AnchorPoint = Vector2.new(1, 0.5)
 				SelectOptionsFrame.BackgroundColor3 = SURFACE
 				SelectOptionsFrame.BackgroundTransparency = 0.15
@@ -3844,7 +3866,7 @@ function BananaHub:Window(GuiConfig)
 					end)
 
 					if not applied then
-						warn("[BANANAHUB] dropdown pick failed: " .. tostring(err))
+						BananaHub.LastDropdownError = tostring(err)
 					end
 				end
 
@@ -4322,6 +4344,27 @@ function BananaHub:Window(GuiConfig)
 				ButtonLabel.Name = "ButtonLabel"
 				ButtonLabel.Parent = MainButton
 
+				-- Optional hint under the button. Opt-in: a caller that passes no
+				-- Desc keeps the original 34px row exactly as it was, so none of
+				-- the existing scripts change shape.
+				local buttonDesc = cfg.Desc or cfg.Content
+				if buttonDesc and tostring(buttonDesc) ~= "" then
+					Button.Size = UDim2.new(1, 0, 0, 50)
+					MainButton.Size = UDim2.new(1, 0, 0, 34)
+					local ButtonDesc = Instance.new("TextLabel")
+					ButtonDesc.Font = Enum.Font.Gotham
+					ButtonDesc.Text = tostring(buttonDesc)
+					ButtonDesc.TextColor3 = Color3.fromRGB(150, 150, 150)
+					ButtonDesc.TextSize = 11
+					ButtonDesc.TextXAlignment = Enum.TextXAlignment.Left
+					ButtonDesc.BackgroundTransparency = 1
+					ButtonDesc.Position = UDim2.new(0, 8, 0, 36)
+					ButtonDesc.Size = UDim2.new(1, -16, 0, 12)
+					ButtonDesc.TextTruncate = Enum.TextTruncate.AtEnd
+					ButtonDesc.Name = "ButtonDesc"
+					ButtonDesc.Parent = Button
+				end
+
 				local ButtonFunc = {Type = "Button", Value = nil}
 
 				function ButtonFunc:SetTitle(text)
@@ -4395,10 +4438,37 @@ function BananaHub:Window(GuiConfig)
 
 				local ParagraphFunc = {Type = "Paragraph", Value = body}
 
+				-- Live text. The row AND the label both have to grow: the label is
+				-- a fixed 14px strip otherwise, so a second line was silently
+				-- clipped. Explicit newlines count as line breaks here - a plain
+				-- #text/46 estimate folded a 6-line card into 2 lines and cut it
+				-- off. 46 characters is a deliberately conservative wrap width,
+				-- so the estimate errs towards a little extra height rather than
+				-- a cut-off line.
+				local lastHeight = -1
 				function ParagraphFunc:SetContent(text)
-					ParagraphContent.Text = tostring(text)
-					local lines = math.max(1, math.ceil(#ParagraphContent.Text / 46))
-					Paragraph.Size = UDim2.new(1, 0, 0, 24 + 14 * lines)
+					local value = tostring(text)
+					ParagraphContent.Text = value
+					local lines = 0
+					for line in (value .. "\n"):gmatch("([^\n]*)\n") do
+						lines = lines + math.max(1, math.ceil(#line / 46))
+					end
+					if lines < 1 then lines = 1 end
+					local height = lines * 14
+					ParagraphContent.Size = UDim2.new(1, -20, 0, height)
+					if height == lastHeight then return end
+					lastHeight = height
+					-- 24px header + the text block + 6px of breathing room, so the
+					-- last line never sits flush against the row's bottom edge.
+					Paragraph.Size = UDim2.new(1, 0, 0, 30 + height)
+					-- The section measures its children once, when they are added.
+					-- A card that grows afterwards would otherwise be clipped at
+					-- its original 44px, so re-measure when the height changes.
+					-- Re-measuring every update would restart the section tween
+					-- once a second for a card whose text length never moved.
+					if SectionRecord and SectionRecord.Refresh then
+						pcall(SectionRecord.Refresh)
+					end
 				end
 
 				ParagraphFunc:SetContent(body)
