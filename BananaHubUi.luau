@@ -5779,7 +5779,7 @@ function BananaHub:KeyGate(opts)
 	return true, info
 end
 
--- Let the loader confirm which build it got.
+-- Let the loader confirm which build it got
 BananaHub.Build = BUILD
 BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_28"
 
