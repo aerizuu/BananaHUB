@@ -1498,15 +1498,14 @@ function BananaHub:Window(GuiConfig)
 	-- Key time pill: sits directly above the player footer in the sidebar. Only
 	-- built when a key is in play, so the free build's sidebar is unchanged.
 	--
-	-- The footer occupies the bottom 40px (-43..-3) and the tab list above it
-	-- ends at -50, so the pill takes a 16px slot at -64..-48 and the list is
-	-- shortened by the same amount. Both branches read BananaHub.KeyInfo
-	-- directly rather than caching it, so this adds no local to the window.
+	-- The footer occupies the bottom 40px (-43..-3), so the pill takes a 20px
+	-- slot at -68..-48 and the tab list is shortened to match (see ScrollTab's
+	-- size below, which keys off BananaHub.KeyInfo).
 	if BananaHub.KeyInfo ~= nil and BananaHub.MakeKeyBadge then
 		local KeyTimePill = BananaHub.MakeKeyBadge(LayersTab)
 		KeyTimePill.AnchorPoint = Vector2.new(0, 1)
 		KeyTimePill.Position = UDim2.new(0, 3, 1, -48)
-		KeyTimePill.Size = UDim2.new(1, -18, 0, 16)
+		KeyTimePill.Size = UDim2.new(1, -18, 0, 20)
 	end
 
 	local PlayerFooter = Instance.new("Frame")
@@ -1614,8 +1613,11 @@ function BananaHub:Window(GuiConfig)
 	-- 50px normally clears the player footer; with the key pill in play the
 	-- list must stop above it instead of scrolling underneath. The search box
 	-- adds a further 30px at the top, so the list starts below it.
+	--
+	-- -104 with a key: 50 (top inset) + 34 (search box) + 20 (key pill) exactly
+	-- reaches the pill's top edge, so no tab row hides behind it.
 	ScrollTab.Position = UDim2.new(0, 3, 0, 34)
-	ScrollTab.Size = UDim2.new(1, 0, 1, ((BananaHub.KeyInfo ~= nil) and -100 or -84))
+	ScrollTab.Size = UDim2.new(1, 0, 1, ((BananaHub.KeyInfo ~= nil) and -104 or -84))
 	ScrollTab.Name = "ScrollTab"
 	ScrollTab.Parent = LayersTab
 
@@ -4822,10 +4824,14 @@ function BananaHub.MakeKeyBadge(parent)
 	holder.Name = "KeyTimeBadge"
 	holder.BackgroundTransparency = 1
 	holder.BorderSizePixel = 0
-	holder.Size = UDim2.new(1, 0, 0, 16)
+	holder.Size = UDim2.new(1, 0, 0, 20)
 	holder.ZIndex = 100
 	holder.Parent = parent
 
+	-- 16x16, not 12x12. These icon assets are drawn on a square canvas with
+	-- padding around the glyph, so the visible mark was only about 7px in a
+	-- 12px box and read as a smudge. The box is oversized on purpose to give the
+	-- glyph itself room; Stretch then fills the box, which is what we want.
 	local icon = Instance.new("ImageLabel")
 	icon.Name = "Icon"
 	icon.BackgroundTransparency = 1
@@ -4833,7 +4839,7 @@ function BananaHub.MakeKeyBadge(parent)
 	icon.ImageColor3 = KC.MUTED
 	icon.AnchorPoint = Vector2.new(0, 0.5)
 	icon.Position = UDim2.new(0, 0, 0.5, 0)
-	icon.Size = UDim2.new(0, 12, 0, 12)
+	icon.Size = UDim2.new(0, 16, 0, 16)
 	icon.ZIndex = 101
 	icon.Parent = holder
 
@@ -4842,11 +4848,11 @@ function BananaHub.MakeKeyBadge(parent)
 	label.Font = Enum.Font.GothamBold
 	label.Text = ""
 	label.TextColor3 = KC.MUTED
-	label.TextSize = 9
+	label.TextSize = 10
 	label.TextXAlignment = Enum.TextXAlignment.Left
 	label.TextTruncate = Enum.TextTruncate.AtEnd
-	label.Position = UDim2.new(0, 16, 0, 0)
-	label.Size = UDim2.new(1, -16, 1, 0)
+	label.Position = UDim2.new(0, 20, 0, 0)
+	label.Size = UDim2.new(1, -20, 1, 0)
 	label.ZIndex = 101
 	label.Parent = holder
 
