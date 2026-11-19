@@ -28,6 +28,7 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
 local GuiService = game:GetService("GuiService")
+local TextService = game:GetService("TextService")
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
 local viewport = workspace.CurrentCamera.ViewportSize
@@ -1296,7 +1297,6 @@ function BananaHub:Window(GuiConfig)
 	TextLabel.TextXAlignment = Enum.TextXAlignment.Left
 	TextLabel.TextTruncate = Enum.TextTruncate.AtEnd
 	TextLabel.BackgroundTransparency = 0.999
-	-- Title keeps clear of the footer text and the device badge to its right.
 	TextLabel.Size = UDim2.new(1, -300, 1, 0)
 	TextLabel.Position = UDim2.new(0, 35, 0, 0)
 	TextLabel.Parent = Top
@@ -1308,8 +1308,10 @@ function BananaHub:Window(GuiConfig)
 	TextLabel1.BackgroundTransparency = 0.999
 	TextLabel1.TextXAlignment = Enum.TextXAlignment.Right
 	TextLabel1.TextTruncate = Enum.TextTruncate.AtEnd
-	-- Sits between the title and the badge. 150px is enough for "Soreya | V 1.0"
-	-- and stops it running under the badge on a narrow window.
+	-- The footer is the game name, so its width comes from the measured text
+	-- rather than a fixed 150px box: a fixed box clipped "Throw Food For Animals"
+	-- down to "Throw Food For..." even when the title bar had room to spare.
+	-- LayoutTitleBar sizes and places it once the bar has a real width.
 	TextLabel1.Size = UDim2.new(0, 150, 1, 0)
 	TextLabel1.Position = UDim2.new(1, -300, 0, 0)
 	TextLabel1.Parent = Top
@@ -1372,30 +1374,89 @@ function BananaHub:Window(GuiConfig)
 	DeviceText.ZIndex = 4
 	DeviceText.Parent = DeviceBadge
 
-	-- The long "Game | V x.y" line does not fit beside the badge on a phone, so
-	-- hide it there rather than letting it run under the close button. The title
-	-- then takes over that space: with the footer gone the badge is the only
-	-- thing to its right, so stop at -165 instead of -300.
+	-- On a phone the badge is the only thing right of the title, so it is drawn a
+	-- little smaller. Whether the footer fits is decided by LayoutTitleBar, which
+	-- measures the text instead of assuming a width.
 	if isCompact() then
-		TextLabel1.Visible = false
 		DeviceBadge.Size = UDim2.new(0, 24 + (#DEVICE.Name * 6), 0, 18)
-		TextLabel.Size = UDim2.new(1, -165, 1, 0)
 	end
 
-	-- The window is resizable down to 260px, where the footer text and the badge
-	-- cannot both fit. Drop the footer first (it is decorative) and only then
-	-- let the title run under the badge's left edge.
+	-- The footer carries the game's full name, so it is measured rather than
+	-- given a guessed width: it gets exactly the pixels its text needs, the title
+	-- takes what is left, and the footer steps down in size before it is dropped.
+	local function measure(text: string, size: number): number
+		local ok, bounds = pcall(function()
+			return TextService:GetTextSize(text, size, Enum.Font.GothamBold,
+				Vector2.new(2000, 100))
+		end)
+		if ok and type(bounds) == "Vector2" then return bounds.X end
+		return #text * 8
+	end
+
+	-- Title bar budget, measured from the right edge of Top: Close occupies
+	-- -8..-33 and Min -38..-63, so nothing may run past -63. The badge normally
+	-- ends at -70.
+	local BADGE_GAP = 78
+	-- The footer carries the game's full name, so it steps down in size before it
+	-- is allowed to be cut, and it outranks both the badge and the title.
+	local FOOTER_SIZES = {14, 13, 12, 11, 10, 9}
+
+	local function measureFooter(size: number): number
+		return math.ceil(measure(TextLabel1.Text, size)) + 6
+	end
+
+	-- Largest size whose width still leaves `reserve` pixels for the title.
+	local function fitFooter(room: number, reserve: number): (number, number)
+		for _, size in ipairs(FOOTER_SIZES) do
+			local width = measureFooter(size)
+			if room - width >= reserve then return width, size end
+		end
+		return 0, FOOTER_SIZES[#FOOTER_SIZES]
+	end
+
 	local function LayoutTitleBar()
-		local w = DropShadowHolder.AbsoluteSize.X
+		-- Every offset in this bar is relative to Top, not to the window, so the
+		-- budget is Top's own width. Using the window width here overshoots by the
+		-- 47px the panel is inset on each side and pushes the footer under Close.
+		local w = Top.AbsoluteSize.X
 		if w <= 0 then return end
-		if w < 420 then
-			TextLabel1.Visible = false
-			TextLabel.Size = UDim2.new(1, -165, 1, 0)
-		elseif not isCompact() then
-			TextLabel1.Visible = true
-			TextLabel.Size = UDim2.new(1, -300, 1, 0)
+
+		DeviceBadge.Visible = true
+		TextLabel.Visible = true
+		local badgeWidth = DeviceBadge.Size.X.Offset + BADGE_GAP
+		local room = w - badgeWidth - 35
+
+		-- Pass 1: badge, title and a full-size footer. Pass 2 drops the badge,
+		-- which is decorative. Pass 3 drops the title text and keeps its icon:
+		-- "Banana Hub" is on the window already, while a half-cut game name is
+		-- just wrong, so the name wins the last of the space.
+		local footerWidth, footerSize = fitFooter(room, math.min(90, room * 0.28))
+
+		if footerWidth == 0 then
+			DeviceBadge.Visible = false
+			badgeWidth = 66   -- Min ends at -63, so the footer must stop there
+			room = w - badgeWidth - 35
+			footerWidth, footerSize = fitFooter(room, math.min(90, room * 0.28))
+		end
+
+		if footerWidth == 0 then
+			TextLabel.Visible = false
+			footerWidth, footerSize = fitFooter(room, 0)
+			-- Nothing fits even at the smallest size: take the whole bar and let
+			-- the label truncate, which at least keeps the start of the name.
+			if footerWidth == 0 then footerWidth = math.max(room, 40) end
+		end
+
+		TextLabel1.TextSize = footerSize
+		TextLabel1.Visible = true
+		TextLabel1.Size = UDim2.new(0, footerWidth, 1, 0)
+		TextLabel1.Position = UDim2.new(1, -badgeWidth - footerWidth, 0, 0)
+		if TextLabel.Visible then
+			-- The title stops just before the footer starts.
+			TextLabel.Size = UDim2.new(1, -(35 + badgeWidth + footerWidth + 8), 1, 0)
 		end
 	end
+	Top:GetPropertyChangedSignal("AbsoluteSize"):Connect(LayoutTitleBar)
 	DropShadowHolder:GetPropertyChangedSignal("AbsoluteSize"):Connect(LayoutTitleBar)
 	task.defer(LayoutTitleBar)
 
@@ -2200,6 +2261,8 @@ function BananaHub:Window(GuiConfig)
 					MakeDeviceGlyph(DeviceIcon, recheck.Kind, Color3.fromRGB(215, 215, 215), 4)
 					DeviceLine.Text = string.format(
 						"%s  %dx%d", recheck.Name, math.floor(recheck.Width), math.floor(recheck.Height))
+					-- The pill changed width, so the footer budget did too.
+					LayoutTitleBar()
 				end)
 			end)
 		end
