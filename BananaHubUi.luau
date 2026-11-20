@@ -16,11 +16,11 @@
     before they create their window.
 ]]
 
--- BANANAHUB_BUILD_BLACK_28
+-- BANANAHUB_BUILD_BLACK_29
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (or an earlier
 -- build, which had no floating open icon) can never be loaded again.
-local BUILD = "black-28-titlebar"
+local BUILD = "black-29-keyfit"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -5614,9 +5614,15 @@ function BananaHub:KeyGate(opts)
 	keyLabel.ZIndex = 4
 	keyLabel.Parent = panel
 
+	-- A key is 50 characters, which is wider than this box at the normal text
+	-- size. A TextBox does not clip its own text, so the tail used to spill out
+	-- over the panel edge and off the prompt. Two things stop that: this frame
+	-- clips its children as a hard backstop, and the font shrinks to fit so the
+	-- whole key stays readable instead of being cut off.
 	local inputFrame = Instance.new("Frame")
 	inputFrame.BackgroundColor3 = C_SURFACE
 	inputFrame.BorderSizePixel = 0
+	inputFrame.ClipsDescendants = true
 	inputFrame.Position = UDim2.new(0, 16, 0, 82)
 	inputFrame.Size = UDim2.new(1, -32, 0, 34)
 	inputFrame.ZIndex = 3
@@ -5644,6 +5650,42 @@ function BananaHub:KeyGate(opts)
 	inputBox.Size = UDim2.new(1, -20, 1, 0)
 	inputBox.ZIndex = 4
 	inputBox.Parent = inputFrame
+
+	-- Shrink the font until the whole key fits the box. A 50-character key at
+	-- 13px is roughly 380px wide in GothamBold and the box is only ~300px, so
+	-- the default size guarantees an overflow. 8px is the floor: below that the
+	-- text stops being legible, and the clip on inputFrame catches anything left.
+	local KEY_TEXT_SIZES = { 13, 12, 11, 10, 9, 8 }
+	local function fitKeyText()
+		local text = inputBox.Text or ""
+		if text == "" then
+			inputBox.TextSize = KEY_TEXT_SIZES[1]
+			return
+		end
+		local room = inputBox.AbsoluteSize.X
+		if room <= 0 then room = 308 end
+		for _, size in ipairs(KEY_TEXT_SIZES) do
+			local ok, bounds = pcall(function()
+				return TextService:GetTextSize(text, size, Enum.Font.GothamBold,
+					Vector2.new(4000, 100))
+			end)
+			-- No usable measurement: keep the largest size and let the clip work.
+			if not ok or type(bounds) ~= "Vector2" then
+				inputBox.TextSize = KEY_TEXT_SIZES[1]
+				return
+			end
+			if bounds.X <= room then
+				inputBox.TextSize = size
+				return
+			end
+		end
+		inputBox.TextSize = KEY_TEXT_SIZES[#KEY_TEXT_SIZES]
+	end
+	-- No connection bookkeeping needed: both signals live on instances inside
+	-- this prompt's ScreenGui, so they are torn down with it when it closes.
+	inputBox:GetPropertyChangedSignal("Text"):Connect(fitKeyText)
+	inputFrame:GetPropertyChangedSignal("AbsoluteSize"):Connect(fitKeyText)
+	fitKeyText()
 
 	-- Status line. It replaced the old KEY TIME row: one line of text that says
 	-- what just happened is more useful than a second line of small print, and
@@ -5917,6 +5959,5 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_28"
-
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_29"
 return BananaHub
