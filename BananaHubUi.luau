@@ -17,9 +17,9 @@
 ]]
 
 -- BANANAHUB_BUILD_BLACK_30
--- Build marker. The Soreya scripts look for this exact string before they
--- accept a copy of this library, so a stale workspace cache (or an earlier
--- build, which had no floating open icon) can never be loaded again.
+-- Build label, reported back so a loader can record which copy it got. It is
+-- informational only: no script pins itself to this string any more, so a UI
+-- fix only needs this file uploaded - nothing else has to be edited.
 local BUILD = "black-30-dropdown"
 
 local Players = game:GetService("Players")
