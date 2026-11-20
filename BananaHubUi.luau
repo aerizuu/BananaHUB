@@ -16,11 +16,11 @@
     before they create their window.
 ]]
 
--- BANANAHUB_BUILD_BLACK_27
+-- BANANAHUB_BUILD_BLACK_28
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (or an earlier
 -- build, which had no floating open icon) can never be loaded again.
-local BUILD = "black-27-search"
+local BUILD = "black-28-titlebar"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -37,7 +37,7 @@ local viewport = workspace.CurrentCamera.ViewportSize
 --
 -- gethui() is the executor's hidden container: it is not a child of CoreGui or of
 -- PlayerGui, so a game-side script walking those trees cannot see the window at
--- all. Rayfield and every other hub use it for exactly that reason.
+-- all. That is why it is the first choice here.
 --
 -- CoreGui is the fallback for an executor without gethui, and PlayerGui the last
 -- resort. Both are visible to the game, which is why they are only fallbacks.
@@ -1307,13 +1307,23 @@ function BananaHub:Window(GuiConfig)
 	TextLabel1.TextSize = 14
 	TextLabel1.BackgroundTransparency = 0.999
 	TextLabel1.TextXAlignment = Enum.TextXAlignment.Right
-	TextLabel1.TextTruncate = Enum.TextTruncate.AtEnd
-	-- The footer is the game name, so its width comes from the measured text
-	-- rather than a fixed 150px box: a fixed box clipped "Throw Food For Animals"
-	-- down to "Throw Food For..." even when the title bar had room to spare.
-	-- LayoutTitleBar sizes and places it once the bar has a real width.
-	TextLabel1.Size = UDim2.new(0, 150, 1, 0)
-	TextLabel1.Position = UDim2.new(1, -300, 0, 0)
+	-- Never truncated: the label is sized from its own text, so an ellipsis here
+	-- would only ever mean the layout failed.
+	TextLabel1.TextTruncate = Enum.TextTruncate.None
+	-- Under the badge and the window buttons: the layout gives the name its own
+	-- space, and if a measurement is ever off by a pixel the buttons still win.
+	TextLabel1.ZIndex = 1
+	-- Right-anchored with AutomaticSize, so the box is exactly as wide as the
+	-- name it draws and grows towards the title instead of off the window edge.
+	-- A fixed 150px box was what clipped "Throw Food For Animals" down to
+	-- "Throw Food For..." even when the title bar had room to spare.
+	TextLabel1.AnchorPoint = Vector2.new(1, 0)
+	TextLabel1.AutomaticSize = Enum.AutomaticSize.X
+	TextLabel1.Size = UDim2.new(0, 0, 1, 0)
+	TextLabel1.Position = UDim2.new(1, -66, 0, 0)
+	-- Hidden until LayoutTitleBar has measured the bar, so the very first frame
+	-- cannot draw the name across the buttons.
+	TextLabel1.Visible = false
 	TextLabel1.Parent = Top
 
 	-- ---------------------------------------------------------------
@@ -1399,19 +1409,36 @@ function BananaHub:Window(GuiConfig)
 	local BADGE_GAP = 78
 	-- The footer carries the game's full name, so it steps down in size before it
 	-- is allowed to be cut, and it outranks both the badge and the title.
-	local FOOTER_SIZES = {14, 13, 12, 11, 10, 9}
+	local FOOTER_SIZES = {14, 13, 12, 11, 10, 9, 8}
+	-- Below this the name is not worth reading, so a layout with more space is
+	-- chosen instead of shrinking it further.
+	local MIN_READABLE = 10
 
-	local function measureFooter(size: number): number
-		return math.ceil(measure(TextLabel1.Text, size)) + 6
+	-- The footer is normally "Game | V x.y.z". The version is the least useful
+	-- thing in the bar, so it is dropped before the name is ever allowed to be
+	-- cut: a truncated "Throw Food For Animal..." is worse than no version.
+	local FOOTER_FULL = TextLabel1.Text
+	local FOOTER_NAME = FOOTER_FULL:match("^(.-)%s*|") or FOOTER_FULL
+	local FOOTER_TEXTS = (FOOTER_NAME ~= FOOTER_FULL) and {FOOTER_FULL, FOOTER_NAME} or {FOOTER_FULL}
+
+	local function measureFooter(text: string, size: number): number
+		return math.ceil(measure(text, size)) + 8
 	end
 
-	-- Largest size whose width still leaves `reserve` pixels for the title.
-	local function fitFooter(room: number, reserve: number): (number, number)
-		for _, size in ipairs(FOOTER_SIZES) do
-			local width = measureFooter(size)
-			if room - width >= reserve then return width, size end
-		end
-		return 0, FOOTER_SIZES[#FOOTER_SIZES]
+	-- The title's width comes from where the name actually starts, not from a
+	-- measurement: the name is AutomaticSize, so its real left edge is the only
+	-- number that cannot be wrong by a pixel. `lastFooterWidth`/`lastBadge` are
+	-- the estimate used until that edge exists.
+	local lastFooterWidth = 150
+	local lastBadge = 66
+	local function FitTitle()
+		if not TextLabel.Visible then return end
+		local w = Top.AbsoluteSize.X
+		if w <= 0 then return end
+		local nameLeft = TextLabel1.AbsolutePosition.X - Top.AbsolutePosition.X
+		if nameLeft <= 0 or nameLeft >= w then nameLeft = w - lastBadge - lastFooterWidth end
+		local width = math.max(30, nameLeft - 35 - 8)
+		TextLabel.Size = UDim2.new(0, width, 1, 0)
 	end
 
 	local function LayoutTitleBar()
@@ -1419,46 +1446,83 @@ function BananaHub:Window(GuiConfig)
 		-- budget is Top's own width. Using the window width here overshoots by the
 		-- 47px the panel is inset on each side and pushes the footer under Close.
 		local w = Top.AbsoluteSize.X
+		if w <= 0 then
+			-- First frame: Top has not been sized yet, but the window has. The
+			-- name must still be placed, or it stays hidden and the bar looks
+			-- broken on a slow first render.
+			w = DropShadowHolder.AbsoluteSize.X - 47
+		end
 		if w <= 0 then return end
 
-		DeviceBadge.Visible = true
-		TextLabel.Visible = true
-		local badgeWidth = DeviceBadge.Size.X.Offset + BADGE_GAP
-		local room = w - badgeWidth - 35
+		local badgeFull = DeviceBadge.Size.X.Offset + BADGE_GAP
+		-- Most decoration first. The badge and the title both give way before the
+		-- game's name does: a half-cut name is just wrong, while "Banana Hub" is
+		-- already on the window's icon and the sidebar's brand. The title text is
+		-- only dropped as the last resort, and even then its icon stays.
+		local layouts = {
+			{badge = badgeFull, title = true},   -- badge, title, name
+			{badge = 66,        title = true},   -- badge dropped
+			{badge = 66,        title = false},  -- title text dropped, icon kept
+		}
 
-		-- Pass 1: badge, title and a full-size footer. Pass 2 drops the badge,
-		-- which is decorative. Pass 3 drops the title text and keeps its icon:
-		-- "Banana Hub" is on the window already, while a half-cut game name is
-		-- just wrong, so the name wins the last of the space.
-		local footerWidth, footerSize = fitFooter(room, math.min(90, room * 0.28))
-
-		if footerWidth == 0 then
-			DeviceBadge.Visible = false
-			badgeWidth = 66   -- Min ends at -63, so the footer must stop there
-			room = w - badgeWidth - 35
-			footerWidth, footerSize = fitFooter(room, math.min(90, room * 0.28))
+		for _, option in ipairs(layouts) do
+			local room = w - option.badge - 35 - (option.title and 96 or 0)
+			-- Size first, text second: the biggest readable size wins, and the
+			-- version is dropped before the size is. Nothing smaller than
+			-- MIN_READABLE is chosen here: shrinking the game's name to 8px so the
+			-- title can stay would be the wrong trade, so the next layout (one
+			-- less decoration) is tried instead.
+			for _, size in ipairs(FOOTER_SIZES) do
+				if size < MIN_READABLE then break end
+				for _, text in ipairs(FOOTER_TEXTS) do
+					local width = measureFooter(text, size)
+					if width <= room then
+						DeviceBadge.Visible = option.badge == badgeFull
+						TextLabel.Visible = option.title
+						TextLabel1.Text = text
+						TextLabel1.TextSize = size
+						TextLabel1.Position = UDim2.new(1, -option.badge, 0, 0)
+						TextLabel1.Visible = true
+						lastFooterWidth = width
+						lastBadge = option.badge
+						FitTitle()
+						return
+					end
+				end
+			end
 		end
 
-		if footerWidth == 0 then
-			TextLabel.Visible = false
-			footerWidth, footerSize = fitFooter(room, 0)
-			-- Nothing fits even at the smallest size: take the whole bar and let
-			-- the label truncate, which at least keeps the start of the name.
-			if footerWidth == 0 then footerWidth = math.max(room, 40) end
+		-- Nothing readable fits with any amount of decoration. The name still
+		-- wins: it is the one thing on this bar the player cannot read anywhere
+		-- else, so the title goes and the size is dropped as far as it must be.
+		DeviceBadge.Visible = false
+		TextLabel.Visible = false
+		local room = w - 66
+		TextLabel1.Text = FOOTER_NAME
+		TextLabel1.TextSize = FOOTER_SIZES[#FOOTER_SIZES]
+		for _, size in ipairs(FOOTER_SIZES) do
+			if measureFooter(FOOTER_NAME, size) <= room then
+				TextLabel1.TextSize = size
+				break
+			end
 		end
-
-		TextLabel1.TextSize = footerSize
+		TextLabel1.Position = UDim2.new(1, -66, 0, 0)
 		TextLabel1.Visible = true
-		TextLabel1.Size = UDim2.new(0, footerWidth, 1, 0)
-		TextLabel1.Position = UDim2.new(1, -badgeWidth - footerWidth, 0, 0)
-		if TextLabel.Visible then
-			-- The title stops just before the footer starts.
-			TextLabel.Size = UDim2.new(1, -(35 + badgeWidth + footerWidth + 8), 1, 0)
-		end
+		lastFooterWidth = measureFooter(FOOTER_NAME, TextLabel1.TextSize)
+		lastBadge = 66
 	end
 	Top:GetPropertyChangedSignal("AbsoluteSize"):Connect(LayoutTitleBar)
 	DropShadowHolder:GetPropertyChangedSignal("AbsoluteSize"):Connect(LayoutTitleBar)
+	-- AutomaticSize lands one frame after the text changes, so the title is
+	-- refitted from the name's real edge rather than the measured estimate.
+	TextLabel1:GetPropertyChangedSignal("AbsoluteSize"):Connect(FitTitle)
+	-- The bar's real width only exists after the first render, and on some
+	-- devices the first AbsoluteSize arrives before the layout has settled. A few
+	-- deferred passes cost nothing and mean the name is never left unmeasured,
+	-- which is what used to truncate it to "Throw Food For...".
 	task.defer(LayoutTitleBar)
+	task.delay(0.25, LayoutTitleBar)
+	task.delay(1, LayoutTitleBar)
 
 	Close.Font = Enum.Font.SourceSans
 	Close.Text = ""
@@ -5853,6 +5917,6 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_27"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_28"
 
 return BananaHub
