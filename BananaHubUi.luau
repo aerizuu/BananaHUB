@@ -16,11 +16,11 @@
     before they create their window.
 ]]
 
--- BANANAHUB_BUILD_BLACK_29
+-- BANANAHUB_BUILD_BLACK_30
 -- Build marker. The Soreya scripts look for this exact string before they
 -- accept a copy of this library, so a stale workspace cache (or an earlier
 -- build, which had no floating open icon) can never be loaded again.
-local BUILD = "black-29-keyfit"
+local BUILD = "black-30-dropdown"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -2348,6 +2348,32 @@ function BananaHub:Window(GuiConfig)
 	--   Apply = fn, PickStamp = fn, Reposition = fn }.
 	local OpenDropdowns = {}
 
+	-- When the player last pressed the mouse or a finger, anywhere in the game.
+	--
+	-- A list may only OPEN within a short window after this stamp. That makes
+	-- "a dropdown can only be opened by a real click" a property of the clock
+	-- instead of a flag some code path can set: a delayed open - a duplicate
+	-- delivery of the click that just ran a feature, a callback resolving a
+	-- header a few frames late, a drag that happens to end over a row - has no
+	-- fresh press behind it and is refused. Closing is never gated.
+	local LastUserPress = 0
+	local PRESS_WINDOW = 0.5
+
+	-- Stamped on press and on release: Activated fires on release, so a slow
+	-- click (held longer than the window) must still count as a real click.
+	UserInputService.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			LastUserPress = os.clock()
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			LastUserPress = os.clock()
+		end
+	end)
+
 	-- Every list the library has created, open or not. A list may only be
 	-- visible while it is in OpenDropdowns, which only a click on its own
 	-- header can put it into. This sweep enforces that, so nothing else (a
@@ -2566,6 +2592,51 @@ function BananaHub:Window(GuiConfig)
 	-- knowing about GuiFunc.
 	BananaHub.CloseDropdowns = function() closeAllDropdowns() end
 
+	-- ------------------------------------------------------------------
+	-- Executing a feature holds every list shut for a moment
+	--
+	-- This is the rule the player asked for: flipping a feature on or off
+	-- closes the dropdown and leaves it closed. Closing once is not enough,
+	-- because the same physical click can be delivered twice - the widget's own
+	-- Activated plus the window's press handler - and a feature callback can
+	-- also rebuild its rows and re-anchor its list. Whichever delivery lands
+	-- second would find the list shut and open it again, which is exactly the
+	-- "the dropdown opens by itself when I toggle something" report.
+	--
+	-- A timestamp is used rather than a flag so it expires on its own: a player
+	-- who genuinely wants the list can click its header a moment later. 0.3s is
+	-- longer than any duplicate delivery and far shorter than a second click.
+	--
+	-- Both names live on the module, not in locals: this function is already
+	-- close to Luau's 200-local limit.
+	BananaHub.DropdownSuppressUntil = 0
+	BananaHub.DropdownSuppressSeconds = 0.3
+
+	-- True while a feature is executing. Reads the module field so every
+	-- widget factory below shares one clock.
+	local function dropdownSuppressed()
+		return os.clock() < (BananaHub.DropdownSuppressUntil or 0)
+	end
+
+	-- True only when a real press happened just now. A list may not open
+	-- without one, so no delayed or duplicated code path can pop it up.
+	local function pressIsFresh()
+		return (os.clock() - LastUserPress) <= PRESS_WINDOW
+	end
+
+	-- Close every list AND hold them shut. Exposed on the module so the widget
+	-- factories can reach it without another local.
+	BananaHub.SuppressDropdowns = function()
+		BananaHub.DropdownSuppressUntil = os.clock() + (BananaHub.DropdownSuppressSeconds or 0.3)
+		closeAllDropdowns()
+	end
+
+	-- Local alias: the callback runner below and the widget factories both use
+	-- this name, and a pcall'd module field would hide a typo in the name.
+	local function closeAndSuppress()
+		BananaHub.SuppressDropdowns()
+	end
+
 	-- Run a widget callback with the "an executed choice leaves no list open"
 	-- rule enforced around it. Every widget that fires a feature goes through
 	-- this, so the rule holds for a dropdown pick, a toggle, a button, a slider
@@ -2578,7 +2649,7 @@ function BananaHub:Window(GuiConfig)
 	-- the rest of the window cannot afford.
 	BananaHub.RunCallback = function(fn, ...)
 		local ok, err = pcall(fn, ...)
-		pcall(closeAllDropdowns)
+		pcall(closeAndSuppress)
 		if not ok then
 			-- Silent: the scripts that use this library print nothing, so a
 			-- failed widget callback is recorded rather than announced.
@@ -2727,6 +2798,12 @@ function BananaHub:Window(GuiConfig)
 	-- that header is opened for the player, so moving from one dropdown to
 	-- another stays a single click.
 	shieldClick = function(points)
+		-- This runs from the shield's own InputBegan, so it IS a real press.
+		-- Stamp it here as well as on the global signal: the global handler and
+		-- this one are separate connections, and the freshness test must not
+		-- depend on which of them Roblox happens to fire first.
+		LastUserPress = os.clock()
+
 		-- A press on the open list belongs to the list, whatever the hit test
 		-- says; closing here would swallow the pick.
 		for _, entry in ipairs(OpenDropdowns) do
@@ -3553,9 +3630,11 @@ function BananaHub:Window(GuiConfig)
 					RenderLockedRow(Toggle, ToggleTitle, widgetTitle, SectionAdd)
 				else
 					ToggleButton.Activated:Connect(function()
-						-- Flipping a feature is an execution too; drop any open
-						-- list so it cannot sit over the row that just changed.
-						pcall(closeAllDropdowns)
+						-- Flipping a feature is an execution too: drop any open
+						-- list AND hold lists shut, so the duplicate delivery of
+						-- this same click cannot re-open one over the row that
+						-- just changed.
+						pcall(closeAndSuppress)
 						ToggleFunc:Set(not ToggleFunc.Value)
 					end)
 				end
@@ -3730,7 +3809,7 @@ function BananaHub:Window(GuiConfig)
 					if locked then return end
 					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 						-- Dragging is an execution; no open list should hover over it.
-						pcall(closeAllDropdowns)
+						pcall(closeAndSuppress)
 						Dragging = true
 						setFromX(input.Position.X)
 					end
@@ -3966,7 +4045,11 @@ function BananaHub:Window(GuiConfig)
 
 					local stampAtClose = pickCount
 					local opensAtClose = openCount
-					closeList()
+					-- A pick EXECUTES a choice, so every list is closed and held
+					-- shut: the pick's own release is still in flight and the
+					-- feature it just fired may rebuild rows, either of which
+					-- could otherwise put this list straight back up.
+					closeAndSuppress()
 
 					-- WATCHDOG. Picking an option executes the choice, and an
 					-- executing choice must never leave the list hanging over
@@ -4155,8 +4238,13 @@ function BananaHub:Window(GuiConfig)
 				end
 
 				openList = function()
-					-- Only a click on the header may open a list.
+					-- Only a click on the header may open a list...
 					if not userOpening then return end
+					-- ...and only while a press is genuinely fresh. A duplicated
+					-- delivery of a click that already ran a feature arrives a
+					-- few frames late with no press behind it, so it is refused
+					-- here instead of opening the list the feature just closed.
+					if dropdownSuppressed() or not pressIsFresh() then return end
 					reposition()
 					OptionList.CanvasSize = UDim2.new(0, 0, 0, 0)
 					openCount = openCount + 1
@@ -4212,11 +4300,24 @@ function BananaHub:Window(GuiConfig)
 					-- this first matters: the "close every other dropdown" pass
 					-- below used to include this one, so the toggle re-opened it
 					-- and an open list could never be closed.
+					--
+					-- Closing is deliberately NOT gated by any of the guards
+					-- below: shutting a list is always safe and always allowed.
 					if OptionList.Visible then
 						userOpening = false
 						closeList()
 						return
 					end
+
+					-- OPENING requires a press that happened just now, and no
+					-- feature execution in flight. This is the guard that makes
+					-- "a list opens by itself" impossible: every path that
+					-- reaches here with a stale click - a duplicate delivery of
+					-- the click that just ran a feature, a callback that resolves
+					-- a header a few frames late, a released drag that happens to
+					-- end over this row - has no fresh press behind it and is
+					-- refused.
+					if dropdownSuppressed() or not pressIsFresh() then return end
 
 					closeAllDropdowns()
 					-- Register FIRST, then show: the visible-guard above only
@@ -4421,7 +4522,7 @@ function BananaHub:Window(GuiConfig)
 				-- Typing is an execution; an open list would sit on top of the
 				-- box being typed into.
 				InputTextBox.Focused:Connect(function()
-					pcall(closeAllDropdowns)
+					pcall(closeAndSuppress)
 				end)
 
 				ConfigData[configKey] = initial
@@ -4503,7 +4604,7 @@ function BananaHub:Window(GuiConfig)
 					-- Running an action closes any floating dropdown list. It is
 					-- anchored to its own row, so leaving it up over the page
 					-- while a feature executes is just clutter.
-					pcall(closeAllDropdowns)
+					pcall(closeAndSuppress)
 					if locked then return end
 					if type(cfg.Callback) == "function" then
 						BananaHub.RunCallback(cfg.Callback)
@@ -5959,5 +6060,5 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_29"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_30"
 return BananaHub
