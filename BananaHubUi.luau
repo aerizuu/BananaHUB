@@ -16,11 +16,11 @@
     before they create their window.
 ]]
 
--- BANANAHUB_BUILD_BLACK_30
+-- BANANAHUB_BUILD_BLACK_31
 -- Build label, reported back so a loader can record which copy it got. It is
 -- informational only: no script pins itself to this string any more, so a UI
 -- fix only needs this file uploaded - nothing else has to be edited.
-local BUILD = "black-30-dropdown"
+local BUILD = "black-31-collapsed"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -3350,7 +3350,12 @@ function BananaHub:Window(GuiConfig)
 			UIListLayout2.SortOrder = Enum.SortOrder.LayoutOrder
 			UIListLayout2.Parent = SectionAdd
 
-			local OpenSection = true
+			-- Sections start COLLAPSED. Every feature row lives inside a section, so
+			-- starting open meant a tab opened with everything already expanded -
+			-- the whole page of toggles visible before the player touched
+			-- anything. Collapsed by default keeps a tab to its section titles and
+			-- the player opens only the one they want.
+			local OpenSection = false
 			local isAnimating = false
 			local ANIM_TIME = 0.25
 			local ANIM_STYLE = Enum.EasingStyle.Quart
@@ -3411,8 +3416,12 @@ function BananaHub:Window(GuiConfig)
 				end)
 			end)
 
-			FeatureImg2.Rotation = 0
-			SectionDecideFrame.Size = UDim2.new(1, 0, 0, 2)
+			-- Start in the collapsed visual state, matching OpenSection = false:
+			-- chevron pointing right, accent rule hidden, section only as tall as
+			-- its own title bar. SectionAdd already has zero height, so there is
+			-- nothing to tween down.
+			FeatureImg2.Rotation = -90
+			SectionDecideFrame.Size = UDim2.new(0, 0, 0, 2)
 			SectionAdd.ChildAdded:Connect(function()
 				task.wait(0.05)
 				UpdateSizeSection()
@@ -6060,5 +6069,5 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_30"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_31"
 return BananaHub
