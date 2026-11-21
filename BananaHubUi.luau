@@ -16,11 +16,11 @@
     before they create their window.
 ]]
 
--- BANANAHUB_BUILD_BLACK_31
+-- BANANAHUB_BUILD_BLACK_35
 -- Build label, reported back so a loader can record which copy it got. It is
 -- informational only: no script pins itself to this string any more, so a UI
 -- fix only needs this file uploaded - nothing else has to be edited.
-local BUILD = "black-31-collapsed"
+local BUILD = "black-35-compact"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -208,6 +208,71 @@ local function safeSize(pxWidth, pxHeight)
 end
 
 -- ---------------------------------------------------------------
+-- Layout metrics
+--
+-- One table decides every row height and padding in the window, so the
+-- interface is dense on a phone AND on a desktop instead of only shrinking on
+-- mobile. Before this, the desktop build used 46px widget rows and 30px section
+-- headers, which put only a handful of features on screen at once; those same
+-- numbers were also hardcoded in a dozen widget constructors, so changing the
+-- density meant editing every one of them.
+--
+-- Compact (phone) values are the tightest that still leave a comfortable tap
+-- target: a 36px row is above the ~32px minimum for a fingertip. Desktop keeps
+-- a little more air because a mouse is precise, but it is still markedly denser
+-- than the old 46px rows.
+-- ---------------------------------------------------------------
+local function Metrics()
+	local compact = isCompact()
+	return {
+		TitleBar       = compact and 32 or 34,  -- window title bar height
+		ContentTop     = compact and 44 or 46,  -- where the sidebar and pages start
+		SidebarInset   = compact and 6 or 9,    -- left margin of the tab rail
+		ContentGap     = compact and 10 or 14,  -- gap between rail and page
+		TabRow         = compact and 26 or 27,  -- sidebar tab button
+		SearchH        = compact and 24 or 26,  -- sidebar search box
+		OptionRow      = compact and 34 or 28,  -- dropdown list option
+		SectionHeader  = compact and 28 or 29,  -- section title bar
+		Row            = compact and 36 or 40,  -- toggle / slider / dropdown / input
+		RowWithDesc    = compact and 44 or 46,  -- same, with a hint line
+		Button         = compact and 30 or 32,
+		ButtonWithDesc = compact and 46 or 48,
+		Paragraph      = compact and 36 or 38,
+		PageTitle      = compact and 24 or 30,  -- page heading above the list
+		InputRow       = compact and 54 or 58,  -- title line + box
+		InputBoxH      = compact and 24 or 26,
+		SliderTrack    = compact and 60 or 100, -- slider track width
+		SliderBox      = compact and 40 or 52,  -- slider value box
+		-- Distance from the row's right edge to the value box's right edge:
+		-- padding + track + gap. The title then reserves this plus the box.
+		SliderBoxRight = compact and 76 or 118,
+		DropdownReserve = compact and 128 or 180, -- title's right-hand reservation
+		SelectW        = compact and 110 or 148, -- dropdown "select option" pill
+		SelectH        = compact and 22 or 24,
+		FontTitle      = compact and 12 or 13,
+		FontDesc       = compact and 10 or 11,
+		PadX           = compact and 8 or 10,   -- left/right text padding
+	}
+end
+
+-- Height of a wrapped text block.
+--
+-- TextService:GetTextSize wraps to the frameSize it is given, so this returns
+-- the real pixel height of the text at that width instead of a guess. The
+-- #text/width fallback only runs if TextService throws, which it should not.
+local function wrappedHeight(text, textSize, font, width)
+	if width <= 0 then return textSize end
+	local ok, bounds = pcall(function()
+		return TextService:GetTextSize(text, textSize, font, Vector2.new(width, 10000))
+	end)
+	if ok and type(bounds) == "Vector2" and bounds.Y > 0 then
+		return math.ceil(bounds.Y)
+	end
+	local perChar = math.max(1, math.floor(width / math.max(1, textSize * 0.55)))
+	return math.max(1, math.ceil(#tostring(text) / perChar)) * textSize
+end
+
+-- ---------------------------------------------------------------
 -- Device detection
 --
 -- TouchEnabled alone cannot tell a phone from a tablet (both report it), and a
@@ -357,50 +422,84 @@ local function MakeDraggable(topbarobject, object)
 		-- because a 470x270 panel on a 390x844 viewport is unusable.
 		frame.Size = safeSize(640, 400)
 
-		-- Grab area: sits over the bottom-right corner of the shadow ring and the
-		-- very corner of the panel. The visible lines are drawn inside this box
-		-- but outside the panel itself. It is deliberately larger on a touch
-		-- screen: a 34px target is fine for a mouse and near-impossible for a
-		-- fingertip.
-		local gripSize = isCompact() and 52 or 34
+		-- Grab area. The window's bottom-right corner is where the grip is drawn,
+		-- but the arcs sit just OUTSIDE the panel (see below), so the hit box is
+		-- grown by `ring` past the corner: it spans `gripSize` inside the corner
+		-- to `ring` outside it, so the visible arcs are grabbable while the part
+		-- covering the page itself is unchanged.
+		-- `ring` is a touch larger than the widest arc so every dot is inside it.
+		local ring = 30
+		local gripSize = isCompact() and 56 or 44
 
 		local changesizeobject = Instance.new("Frame")
 		changesizeobject.AnchorPoint = Vector2.new(1, 1)
 		changesizeobject.BackgroundTransparency = 1
-		changesizeobject.Size = UDim2.new(0, gripSize, 0, gripSize)
-		changesizeobject.Position = UDim2.new(1, 0, 1, 0)
+		changesizeobject.Size = UDim2.new(0, gripSize + ring, 0, gripSize + ring)
+		changesizeobject.Position = UDim2.new(1, ring, 1, ring)
 		changesizeobject.ZIndex = 10
 		changesizeobject.Name = "changesizeobject"
 		changesizeobject.Active = true   -- required to receive InputBegan
 		changesizeobject.Parent = frame
 
-		-- Resize grip: two short 45-degree lines just OUTSIDE the panel's
-		-- bottom-right corner, in the transparent shadow margin around it, so it
-		-- reads as "drag me bigger" without stealing space inside the UI.
-		-- The panel is inset 23.5px inside the holder, so offsets around 14-21px
-		-- from the holder corner hug the panel's corner from just outside it.
-		local lineLength = isCompact() and 16 or 11
-		local function GripLine(inset, length)
-			local line = Instance.new("Frame")
-			line.Name = "ResizeGripLine"
-			line.AnchorPoint = Vector2.new(0.5, 0.5)
-			line.BackgroundColor3 = Color3.fromRGB(215, 215, 215)
-			line.BackgroundTransparency = 0.1
-			line.BorderSizePixel = 0
-			line.Position = UDim2.new(1, -inset, 1, -inset)
-			line.Size = UDim2.new(0, 2, 0, length)
-			line.Rotation = 45
-			line.ZIndex = 11
-			line.Parent = changesizeobject
+		-- Resize grip: two short curved strokes wrapping the bottom-right corner
+		-- from the OUTSIDE, the way WindUI draws it.
+		--
+		-- Geometry: this frame is anchored bottom-right and pushed `ring` past
+		-- the window edge, so in its local space the panel's bottom-right corner
+		-- sits at (gripSize, gripSize), and everything at x>gripSize or
+		-- y>gripSize is outside the panel. The old 45-degree dashes used
+		-- negative offsets from the frame's own corner, which placed them on top
+		-- of the panel - hence the "cut into the corner" look.
+		--
+		-- Roblox has no arc primitive, so each stroke is a run of small rounded
+		-- dots stepped along an arc centred on the panel corner. The sweep stays
+		-- within 0..90 degrees, where every point is outside the panel, so the
+		-- strokes never cover the UI. Only the middle of the quarter circle is
+		-- used, so each stroke reads as a corner detail, not a floating ring.
+		local arcThickness = 3
+		local function GripArc(radius, dotCount, transparency)
+			local arc = Instance.new("Frame")
+			arc.Name = "ResizeGripArc"
+			arc.BackgroundTransparency = 1
+			arc.BorderSizePixel = 0
+			-- Origin of the arc == the panel's corner (see geometry note above).
+			arc.Position = UDim2.new(1, -ring, 1, -ring)
+			arc.Size = UDim2.new(0, radius, 0, radius)
+			arc.ZIndex = 11
+			arc.Parent = changesizeobject
 
-			local lineCorner = Instance.new("UICorner")
-			lineCorner.CornerRadius = UDim.new(1, 0)
-			lineCorner.Parent = line
-			return line
+			-- Sweep 15 to 75 degrees. Roblox's +Y points down, so 0 degrees is
+			-- right and 90 degrees is down: this slice is centred on the corner
+			-- diagonal (45 degrees) and sits in the bottom-right quadrant.
+			local FROM, TO = math.rad(15), math.rad(75)
+			for i = 0, dotCount do
+				local angle = FROM + (TO - FROM) * (i / dotCount)
+				local dot = Instance.new("Frame")
+				dot.Name = "ResizeGripDot"
+				dot.AnchorPoint = Vector2.new(0.5, 0.5)
+				dot.BackgroundColor3 = Color3.fromRGB(205, 205, 205)
+				dot.BackgroundTransparency = transparency
+				dot.BorderSizePixel = 0
+				dot.Size = UDim2.new(0, arcThickness, 0, arcThickness)
+				dot.Position = UDim2.new(
+					0, math.cos(angle) * radius,
+					0, math.sin(angle) * radius
+				)
+				dot.ZIndex = 11
+				dot.Parent = arc
+
+				local dotCorner = Instance.new("UICorner")
+				dotCorner.CornerRadius = UDim.new(1, 0)
+				dotCorner.Parent = dot
+			end
+			return arc
 		end
 
-		GripLine(14, lineLength)
-		GripLine(21, lineLength)
+		-- Inner stroke brighter than the outer one, so the pair reads as a corner
+		-- grip rather than two unrelated curves. Both radii stay inside the
+		-- `ring` margin, so neither stroke is ever clipped by the hit box.
+		GripArc(isCompact() and 13 or 11, 8, 0.15)
+		GripArc(isCompact() and 19 or 16, 11, 0.45)
 
 		local function UpdateSize(input)
 			if not StartAbsSize then return end
@@ -550,33 +649,118 @@ function BananaHub:MakeNotify(NotifyConfig)
 		end
 
 		local NotifyGuiRef = existing
+
+		-- The stack lives at the bottom-right and grows upwards, so a card's
+		-- vertical slot is derived from its height and its place in the queue.
+		-- GetChildren order is not insertion order, and Destroy does not renumber
+		-- the survivors, so the queue is rebuilt from the live Position each
+		-- time: Position.Y.Offset runs 0, -h, -2h... from the bottom card up, and
+		-- sorting it descending therefore yields bottom-first.
+		local function stackOrder()
+			local list = {}
+			local layout = NotifyGuiRef:FindFirstChild("NotifyLayout")
+			if not layout then return list end
+			for _, v in ipairs(layout:GetChildren()) do
+				if v.Name == "NotifyFrame" then list[#list + 1] = v end
+			end
+			table.sort(list, function(a, b)
+				return a.Position.Y.Offset > b.Position.Y.Offset
+			end)
+			return list
+		end
+
+		-- Re-seat every card from the bottom up. Called whenever one is removed,
+		-- so the survivors close the gap the closed card left behind.
+		local function restack(animate)
+			local offset = 0
+			for _, v in ipairs(stackOrder()) do
+				local goal = UDim2.new(0, 0, 1, -offset)
+				if animate then
+					TweenService:Create(
+						v,
+						TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
+						{ Position = goal }
+					):Play()
+				else
+					v.Position = goal
+				end
+				offset = offset + v.Size.Y.Offset + 8
+			end
+		end
+
+		-- Notifications are compact on every device, not just on mobile: a toast
+		-- that takes a fifth of the screen is clutter. The card is a fixed 300px
+		-- on desktop and adapts down on a phone, where 300px would overflow a
+		-- 390px viewport once the margin is added.
+		local compact = isCompact()
+		local cam = workspace.CurrentCamera
+		local vp = (cam and cam.ViewportSize) or viewport
+		-- On a phone the card takes the screen width minus a small margin: a
+		-- 300px toast on a 390px screen wastes the only space there is for the
+		-- text, and the body then wraps to three or four lines.
+		local cardWidth = compact
+			and math.floor(math.clamp(vp.X - 20, 200, 380))
+			or 300
+		local cardMargin = compact and 10 or 16
+		-- Row metrics, matched to the window's own Metrics() values so a toast
+		-- reads as part of the same interface.
+		local padX = compact and 8 or 10
+		local iconSize = compact and 40 or 46
+		local titleSize = compact and 12 or 13
+		local descSize = compact and 10 or 11
+		local bodySize = compact and 10 or 11
+		-- The header is two stacked lines: the title row, then the coloured
+		-- description under it. These were a single number before, which made the
+		-- title and the description overlap by a few pixels.
+		local titleH = compact and 17 or 19
+		local descH = descSize + 5
+		local headerH = titleH + descH
+		local closeSize = compact and 18 or 20
+
 		if not NotifyGuiRef:FindFirstChild("NotifyLayout") then
 			local NotifyLayout = Instance.new("Frame")
 			NotifyLayout.AnchorPoint = Vector2.new(1, 1)
 			NotifyLayout.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 			NotifyLayout.BackgroundTransparency = 0.999
 			NotifyLayout.BorderSizePixel = 0
-			NotifyLayout.Position = UDim2.new(1, -30, 1, -30)
-			NotifyLayout.Size = UDim2.new(0, 320, 1, 0)
+			NotifyLayout.Position = UDim2.new(1, -cardMargin, 1, -cardMargin)
+			NotifyLayout.Size = UDim2.new(0, cardWidth, 1, -cardMargin * 2)
 			NotifyLayout.Name = "NotifyLayout"
 			NotifyLayout.Parent = NotifyGuiRef
 
 			NotifyGuiRef.NotifyLayout.ChildRemoved:Connect(function()
-				local Count = 0
-				for _, v in ipairs(NotifyGuiRef.NotifyLayout:GetChildren()) do
-					TweenService:Create(
-						v,
-						TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
-						{ Position = UDim2.new(0, 0, 1, -((v.Size.Y.Offset + 12) * Count)) }
-					):Play()
-					Count = Count + 1
-				end
+				restack(true)
 			end)
+		else
+			-- The container is shared across every notification and outlives
+			-- them, so it was sized once by whichever toast happened to be first.
+			-- Re-apply the metrics on each call: rotating the device, or opening
+			-- the hub on a different screen, must not leave the stack anchored
+			-- with the old margin.
+			local NotifyLayout = NotifyGuiRef.NotifyLayout
+			NotifyLayout.Position = UDim2.new(1, -cardMargin, 1, -cardMargin)
+			NotifyLayout.Size = UDim2.new(0, cardWidth, 1, -cardMargin * 2)
 		end
 
+		-- A phone screen only fits three or four cards, so the oldest is retired
+		-- once the stack would run off the top of the layout. Without this, a
+		-- burst of notifications (a script that reports every feature it starts)
+		-- pushed the first cards above the top edge where nothing could close
+		-- them and they stayed until their own timer ran out.
+		--
+		-- stackOrder is bottom-first, so the oldest card is the LAST entry: it
+		-- is the one furthest up the screen.
+		local MAX_CARDS = compact and 4 or 6
+		local cards = stackOrder()
+		while #cards >= MAX_CARDS do
+			local oldest = table.remove(cards)
+			if oldest then pcall(function() oldest:Destroy() end) end
+		end
+
+		-- Where this card goes: above the whole existing stack.
 		local NotifyPosHeigh = 0
-		for _, v in ipairs(NotifyGuiRef.NotifyLayout:GetChildren()) do
-			NotifyPosHeigh = -(v.Position.Y.Offset) + v.Size.Y.Offset + 12
+		for _, v in ipairs(cards) do
+			NotifyPosHeigh = NotifyPosHeigh + v.Size.Y.Offset + 8
 		end
 
 		local NotifyFrame = Instance.new("Frame")
@@ -594,7 +778,7 @@ function BananaHub:MakeNotify(NotifyConfig)
 		local TextLabel2 = Instance.new("TextLabel")
 
 		NotifyFrame.BackgroundTransparency = 1
-		NotifyFrame.Size = UDim2.new(1, 0, 0, 150)
+		NotifyFrame.Size = UDim2.new(1, 0, 0, 60)
 		NotifyFrame.Name = "NotifyFrame"
 		NotifyFrame.Parent = NotifyGuiRef.NotifyLayout
 		NotifyFrame.AnchorPoint = Vector2.new(0, 1)
@@ -602,13 +786,15 @@ function BananaHub:MakeNotify(NotifyConfig)
 
 		NotifyFrameReal.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
 		NotifyFrameReal.BorderSizePixel = 0
-		NotifyFrameReal.Position = UDim2.new(0, 400, 0, 0)
+		-- Starts off-screen to the right by exactly the card width, so the slide
+		-- in is fully hidden whatever the card's width turned out to be.
+		NotifyFrameReal.Position = UDim2.new(0, cardWidth + 24, 0, 0)
 		NotifyFrameReal.Size = UDim2.new(1, 0, 1, 0)
 		NotifyFrameReal.Name = "NotifyFrameReal"
 		NotifyFrameReal.Parent = NotifyFrame
 
 		UICorner.Parent = NotifyFrameReal
-		UICorner.CornerRadius = UDim.new(0, 10)
+		UICorner.CornerRadius = UDim.new(0, 8)
 
 		UIStroke.Parent = NotifyFrameReal
 		UIStroke.Color = Color3.fromRGB(40, 40, 45)
@@ -619,49 +805,61 @@ function BananaHub:MakeNotify(NotifyConfig)
 		LeftIcon.BackgroundColor3 = Color3.fromRGB(28, 28, 32)
 		LeftIcon.BackgroundTransparency = 0
 		LeftIcon.BorderSizePixel = 0
-		LeftIcon.Size = UDim2.new(0, 55, 1, 0)
+		LeftIcon.Size = UDim2.new(0, iconSize, 1, 0)
 		LeftIcon.ScaleType = Enum.ScaleType.Fit
 		LeftIcon.Parent = NotifyFrameReal
 
 		LeftIconCorner.Parent = LeftIcon
-		LeftIconCorner.CornerRadius = UDim.new(0, 10)
+		LeftIconCorner.CornerRadius = UDim.new(0, 8)
 
 		ContentFrame.BackgroundTransparency = 1
-		ContentFrame.Position = UDim2.new(0, 55, 0, 0)
-		ContentFrame.Size = UDim2.new(1, -55, 1, 0)
+		ContentFrame.Position = UDim2.new(0, iconSize, 0, 0)
+		ContentFrame.Size = UDim2.new(1, -iconSize, 1, 0)
+		-- A card that was capped to the stack height (see cardHeight below) has
+		-- more body text than room, so the overflow is clipped rather than
+		-- spilling out over the card's own rounded corner.
+		ContentFrame.ClipsDescendants = true
 		ContentFrame.Name = "ContentFrame"
 		ContentFrame.Parent = NotifyFrameReal
 
 		Top.BackgroundTransparency = 1
-		Top.Size = UDim2.new(1, 0, 0, 36)
+		Top.Size = UDim2.new(1, 0, 0, headerH)
 		Top.Name = "Top"
 		Top.Parent = ContentFrame
 
 		TextLabel.Font = Enum.Font.GothamBold
 		TextLabel.Text = NotifyConfig.Title
 		TextLabel.TextColor3 = Color3.fromRGB(240, 240, 245)
-		TextLabel.TextSize = 14
+		TextLabel.TextSize = titleSize
 		TextLabel.TextXAlignment = Enum.TextXAlignment.Left
+		TextLabel.TextYAlignment = Enum.TextYAlignment.Center
+		TextLabel.TextTruncate = Enum.TextTruncate.AtEnd
 		TextLabel.BackgroundTransparency = 1
-		TextLabel.Size = UDim2.new(1, -50, 1, 0)
-		TextLabel.Position = UDim2.new(0, 10, 0, 0)
+		TextLabel.Size = UDim2.new(1, -(padX + closeSize + 4), 0, titleH)
+		TextLabel.Position = UDim2.new(0, padX, 0, 0)
 		TextLabel.Parent = Top
 
+		-- The subtitle sits on its own line under the title rather than beside
+		-- it. The old version offset it by TextLabel.TextBounds.X, which put it
+		-- off the right edge of a narrow phone card, and the old single
+		-- `headerH` made the two lines overlap.
 		TextLabel1.Font = Enum.Font.GothamMedium
 		TextLabel1.Text = NotifyConfig.Description
 		TextLabel1.TextColor3 = NotifyConfig.Color
-		TextLabel1.TextSize = 13
+		TextLabel1.TextSize = descSize
 		TextLabel1.TextXAlignment = Enum.TextXAlignment.Left
+		TextLabel1.TextYAlignment = Enum.TextYAlignment.Center
+		TextLabel1.TextTruncate = Enum.TextTruncate.AtEnd
 		TextLabel1.BackgroundTransparency = 1
-		TextLabel1.Size = UDim2.new(1, 0, 1, 0)
-		TextLabel1.Position = UDim2.new(0, TextLabel.TextBounds.X + 15, 0, 0)
+		TextLabel1.Size = UDim2.new(1, -(padX * 2), 0, descH)
+		TextLabel1.Position = UDim2.new(0, padX, 0, titleH)
 		TextLabel1.Parent = Top
 
 		Close.Text = ""
-		Close.AnchorPoint = Vector2.new(1, 0.5)
+		Close.AnchorPoint = Vector2.new(1, 0)
 		Close.BackgroundTransparency = 1
-		Close.Position = UDim2.new(1, -8, 0.5, 0)
-		Close.Size = UDim2.new(0, 24, 0, 24)
+		Close.Position = UDim2.new(1, -2, 0, 2)
+		Close.Size = UDim2.new(0, closeSize, 0, closeSize)
 		Close.Name = "Close"
 		Close.Parent = Top
 
@@ -673,24 +871,38 @@ function BananaHub:MakeNotify(NotifyConfig)
 		ImageLabel.Size = UDim2.new(0.7, 0, 0.7, 0)
 		ImageLabel.Parent = Close
 
+		-- Body text. Height is measured with TextService at the card's real text
+		-- width, so the card fits one line or six exactly - the old estimate
+		-- (13px per TextBounds.X/size division) could leave the last line cut
+		-- off or a large empty gap under a short message.
+		local bodyWidth = cardWidth - iconSize - (padX * 2)
+		local bodyTop = headerH + 4
+
 		TextLabel2.Font = Enum.Font.Gotham
 		TextLabel2.TextColor3 = Color3.fromRGB(160, 160, 165)
-		TextLabel2.TextSize = 13
+		TextLabel2.TextSize = bodySize
 		TextLabel2.Text = NotifyConfig.Content
 		TextLabel2.TextXAlignment = Enum.TextXAlignment.Left
 		TextLabel2.TextYAlignment = Enum.TextYAlignment.Top
-		TextLabel2.BackgroundTransparency = 1
-		TextLabel2.Position = UDim2.new(0, 10, 0, 30)
-		TextLabel2.Parent = ContentFrame
-		TextLabel2.Size = UDim2.new(1, -20, 0, 13)
 		TextLabel2.TextWrapped = true
-		TextLabel2.Size = UDim2.new(1, -20, 0, 13 + (13 * (TextLabel2.TextBounds.X // math.max(TextLabel2.AbsoluteSize.X, 1))))
+		TextLabel2.BackgroundTransparency = 1
+		TextLabel2.Position = UDim2.new(0, padX, 0, bodyTop)
+		TextLabel2.Parent = ContentFrame
 
-		if TextLabel2.AbsoluteSize.Y < 27 then
-			NotifyFrame.Size = UDim2.new(1, 0, 0, 70)
-		else
-			NotifyFrame.Size = UDim2.new(1, 0, 0, TextLabel2.AbsoluteSize.Y + 43)
-		end
+		local bodyHeight = wrappedHeight(tostring(NotifyConfig.Content or ""), bodySize,
+			Enum.Font.Gotham, bodyWidth)
+		TextLabel2.Size = UDim2.new(1, -(padX * 2), 0, bodyHeight)
+
+		-- Card height: header + subtitle + body + bottom padding, with a floor so
+		-- a one-word message still reads as a card rather than a sliver.
+		local cardHeight = bodyTop + bodyHeight + (compact and 8 or 10)
+		if cardHeight < (compact and 58 or 62) then cardHeight = compact and 58 or 62 end
+		-- Never taller than the stack can hold: a long message on a phone would
+		-- otherwise fill the whole screen and push the older cards off it.
+		local stackMax = NotifyGuiRef.NotifyLayout.AbsoluteSize.Y
+		if stackMax > 0 and cardHeight > stackMax - 8 then cardHeight = stackMax - 8 end
+		if cardHeight < 40 then cardHeight = 40 end
+		NotifyFrame.Size = UDim2.new(1, 0, 0, cardHeight)
 
 		local closed = false
 		function NotifyFunction:Close()
@@ -699,7 +911,7 @@ function BananaHub:MakeNotify(NotifyConfig)
 			TweenService:Create(
 				NotifyFrameReal,
 				TweenInfo.new(tonumber(NotifyConfig.Time), Enum.EasingStyle.Quint, Enum.EasingDirection.In),
-				{ Position = UDim2.new(0, 400, 0, 0) }
+				{ Position = UDim2.new(0, cardWidth + 24, 0, 0) }
 			):Play()
 			task.wait(tonumber(NotifyConfig.Time) / 1.2)
 			NotifyFrame:Destroy()
@@ -747,6 +959,14 @@ function BananaHub:Window(GuiConfig)
 	GuiConfig.Image = GuiConfig.Image or GuiConfig.Icon
 
 	CURRENT_VERSION = GuiConfig.Version
+
+	-- Every row height and padding in this window comes from here, so the whole
+	-- interface is dense on desktop as well as on a phone (see Metrics above).
+	local M = Metrics()
+	-- Snapshot of the same decision Metrics() just made. Recomputed per call
+	-- where orientation can change; this one is for the build-time branches
+	-- below (page title size, sidebar widths) that run once.
+	local compact = isCompact()
 
 	-- Locked-feature panel. A free-script widget keeps its normal row on top and
 	-- gets a card underneath with a padlock and "Buy Premium to unlock this
@@ -958,7 +1178,10 @@ function BananaHub:Window(GuiConfig)
 	-- box) is hidden rather than drawn dimmed, because a dead control invites
 	-- clicks and reads as a bug.
 	local function RenderLockedRow(row, titleLabel, titleText, sectionAdd)
-		row.Size = UDim2.new(1, 0, 0, 46)
+		-- Locked rows use the same metrics as live ones: on a phone a fixed 46px
+		-- locked padlock was taller than every toggle around it.
+		local LM = Metrics()
+		row.Size = UDim2.new(1, 0, 0, LM.RowWithDesc)
 
 		-- Give the row the normal surface so every locked row looks the same,
 		-- whatever widget it came from (a Button keeps its surface on an inner
@@ -987,8 +1210,15 @@ function BananaHub:Window(GuiConfig)
 		end
 		titleLabel.Visible = true
 		titleLabel.Text = titleText
-		titleLabel.Position = UDim2.new(0, 34, 0, 9)
-		titleLabel.Size = UDim2.new(1, -44, 0, 13)
+		-- Same geometry as a live widget with a hint: title on the top line,
+		-- "Buy Premium" underneath, both offset by the row's own padding so a
+		-- 44px compact row is not over-filled by the old fixed 7/24 offsets.
+		local titleTop = LM.RowWithDesc >= 46 and 8 or 6
+		local subTop = titleTop + LM.FontTitle + 3
+		titleLabel.Position = UDim2.new(0, 30, 0, titleTop)
+		titleLabel.Size = UDim2.new(1, -40, 0, LM.FontTitle + 2)
+		titleLabel.TextSize = LM.FontTitle
+		titleLabel.TextTruncate = Enum.TextTruncate.AtEnd
 		titleLabel.TextColor3 = Color3.fromRGB(255, 226, 160)
 		titleLabel.ZIndex = 2
 
@@ -1001,12 +1231,12 @@ function BananaHub:Window(GuiConfig)
 		Sub.Font = Enum.Font.Gotham
 		Sub.Text = LOCK_TEXT
 		Sub.TextColor3 = Color3.fromRGB(150, 142, 126)
-		Sub.TextSize = 10
+		Sub.TextSize = LM.FontDesc
 		Sub.TextXAlignment = Enum.TextXAlignment.Left
 		Sub.TextTruncate = Enum.TextTruncate.AtEnd
 		Sub.BackgroundTransparency = 1
-		Sub.Position = UDim2.new(0, 34, 0, 27)
-		Sub.Size = UDim2.new(1, -44, 0, 12)
+		Sub.Position = UDim2.new(0, 30, 0, subTop)
+		Sub.Size = UDim2.new(1, -40, 0, LM.FontDesc + 2)
 		Sub.ZIndex = 2
 		Sub.Parent = row
 
@@ -1043,8 +1273,11 @@ function BananaHub:Window(GuiConfig)
 		FloatIcon.Name = "BananaHubFloatIcon"
 		FloatIcon.AnchorPoint = Vector2.new(0, 0)
 		-- Bottom-left, clear of the Roblox jump button and the chat bar.
-		FloatIcon.Position = UDim2.new(0, 20, 1, -120)
-		FloatIcon.Size = UDim2.new(0, 46, 0, 46)
+		-- Slightly smaller on a phone: 46px sits right on top of the jump button
+		-- on a 390px-wide screen, and it is a reopen button, not a main control.
+		local floatSize = isCompact() and 40 or 46
+		FloatIcon.Position = UDim2.new(0, 20, 1, -(floatSize + 74))
+		FloatIcon.Size = UDim2.new(0, floatSize, 0, floatSize)
 		FloatIcon.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
 		FloatIcon.BackgroundTransparency = 0.15
 		FloatIcon.BorderSizePixel = 0
@@ -1274,12 +1507,43 @@ function BananaHub:Window(GuiConfig)
 	MainStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	MainStroke.Parent = Main
 
+	-- Rounded window corners. This UICorner was created but never given a
+	-- radius, so it defaulted to 0 and the whole window was a hard-edged
+	-- rectangle. 10px is the WindUI look: clearly rounded at all four corners
+	-- without eating into the title bar or the page. MainStroke follows the
+	-- corner automatically because it uses ApplyStrokeMode.Border.
+	UICorner.CornerRadius = UDim.new(0, 10)
 	UICorner.Parent = Main
 
 	Top.BackgroundTransparency = 0.999
-	Top.Size = UDim2.new(1, 0, 0, 38)
+	Top.Size = UDim2.new(1, 0, 0, M.TitleBar)
 	Top.Name = "Top"
 	Top.Parent = Main
+
+	-- ---------------------------------------------------------------
+	-- Title bar geometry
+	--
+	-- Close and Min are laid out from the right edge, the device badge sits to
+	-- their left, and the game's name takes whatever is left of the bar. All
+	-- four offsets are derived from these numbers so that growing the buttons
+	-- on a phone (a 25px target is below the comfortable touch size) cannot
+	-- leave the badge or the name underneath them.
+	--
+	-- +2 / -2 reproduce the old desktop offsets of -70 (badge) and -66 (name)
+	-- exactly, so the desktop bar is pixel-identical to before.
+	--
+	-- Held in one table rather than five locals: GuiFunc:Window is close to
+	-- Luau's 200-register limit and each local costs a slot for the whole
+	-- function body.
+	-- ---------------------------------------------------------------
+	local bar = {
+		Compact = isCompact(),
+		BtnRight = 8,
+		BtnGap = 5,
+	}
+	bar.BtnSize = bar.Compact and 28 or 25
+	bar.BadgeRight = bar.BtnRight + (bar.BtnSize + bar.BtnGap) * 2 + 2
+	bar.ButtonsRight = bar.BtnRight + (bar.BtnSize + bar.BtnGap) * 2 - 2
 
 	TitleIcon.Name = "TitleIcon"
 	TitleIcon.Parent = Top
@@ -1320,7 +1584,7 @@ function BananaHub:Window(GuiConfig)
 	TextLabel1.AnchorPoint = Vector2.new(1, 0)
 	TextLabel1.AutomaticSize = Enum.AutomaticSize.X
 	TextLabel1.Size = UDim2.new(0, 0, 1, 0)
-	TextLabel1.Position = UDim2.new(1, -66, 0, 0)
+	TextLabel1.Position = UDim2.new(1, -bar.ButtonsRight, 0, 0)
 	-- Hidden until LayoutTitleBar has measured the bar, so the very first frame
 	-- cannot draw the name across the buttons.
 	TextLabel1.Visible = false
@@ -1333,13 +1597,14 @@ function BananaHub:Window(GuiConfig)
 	-- on (PC / Mobile / Tablet) with a matching icon. Purely informational: the
 	-- compact layout is chosen by isCompact(), not by this.
 	--
-	-- Layout budget in the title bar, from the right edge: Close occupies
-	-- -33..-8, Min -63..-38. The badge ends at -70 so it cannot overlap either.
+	-- Layout budget in the title bar, from the right edge: Close and Min sit at
+	-- -8 and -(8 + size + gap), and the badge ends just left of them (see
+	-- bar.BadgeRight above), so it cannot overlap either button.
 	-- ---------------------------------------------------------------
 	local DeviceBadge = Instance.new("Frame")
 	DeviceBadge.Name = "DeviceBadge"
 	DeviceBadge.AnchorPoint = Vector2.new(1, 0.5)
-	DeviceBadge.Position = UDim2.new(1, -70, 0.5, 0)
+	DeviceBadge.Position = UDim2.new(1, -bar.BadgeRight, 0.5, 0)
 	-- Sized from the label length: "Mobile"/"Tablet" are the longest at 6 chars
 	-- plus the 12px icon and padding, so the pill never clips its own text.
 	DeviceBadge.Size = UDim2.new(0, 26 + (#DEVICE.Name * 6), 0, 20)
@@ -1387,7 +1652,7 @@ function BananaHub:Window(GuiConfig)
 	-- On a phone the badge is the only thing right of the title, so it is drawn a
 	-- little smaller. Whether the footer fits is decided by LayoutTitleBar, which
 	-- measures the text instead of assuming a width.
-	if isCompact() then
+	if bar.Compact then
 		DeviceBadge.Size = UDim2.new(0, 24 + (#DEVICE.Name * 6), 0, 18)
 	end
 
@@ -1405,8 +1670,9 @@ function BananaHub:Window(GuiConfig)
 
 	-- Title bar budget, measured from the right edge of Top: Close occupies
 	-- -8..-33 and Min -38..-63, so nothing may run past -63. The badge normally
-	-- ends at -70.
-	local BADGE_GAP = 78
+	-- ends at -70. Derived from the same geometry used to place them, so the
+	-- compact bar's larger buttons move this value with them.
+	local BADGE_GAP = bar.BadgeRight + 8
 	-- The footer carries the game's full name, so it steps down in size before it
 	-- is allowed to be cut, and it outranks both the badge and the title.
 	local FOOTER_SIZES = {14, 13, 12, 11, 10, 9, 8}
@@ -1430,7 +1696,7 @@ function BananaHub:Window(GuiConfig)
 	-- number that cannot be wrong by a pixel. `lastFooterWidth`/`lastBadge` are
 	-- the estimate used until that edge exists.
 	local lastFooterWidth = 150
-	local lastBadge = 66
+	local lastBadge = bar.ButtonsRight
 	local function FitTitle()
 		if not TextLabel.Visible then return end
 		local w = Top.AbsoluteSize.X
@@ -1460,9 +1726,9 @@ function BananaHub:Window(GuiConfig)
 		-- already on the window's icon and the sidebar's brand. The title text is
 		-- only dropped as the last resort, and even then its icon stays.
 		local layouts = {
-			{badge = badgeFull, title = true},   -- badge, title, name
-			{badge = 66,        title = true},   -- badge dropped
-			{badge = 66,        title = false},  -- title text dropped, icon kept
+			{badge = badgeFull, title = true},         -- badge, title, name
+			{badge = bar.ButtonsRight, title = true},   -- badge dropped
+			{badge = bar.ButtonsRight, title = false},  -- title text dropped, icon kept
 		}
 
 		for _, option in ipairs(layouts) do
@@ -1497,7 +1763,7 @@ function BananaHub:Window(GuiConfig)
 		-- else, so the title goes and the size is dropped as far as it must be.
 		DeviceBadge.Visible = false
 		TextLabel.Visible = false
-		local room = w - 66
+		local room = w - bar.ButtonsRight
 		TextLabel1.Text = FOOTER_NAME
 		TextLabel1.TextSize = FOOTER_SIZES[#FOOTER_SIZES]
 		for _, size in ipairs(FOOTER_SIZES) do
@@ -1506,10 +1772,10 @@ function BananaHub:Window(GuiConfig)
 				break
 			end
 		end
-		TextLabel1.Position = UDim2.new(1, -66, 0, 0)
+		TextLabel1.Position = UDim2.new(1, -bar.ButtonsRight, 0, 0)
 		TextLabel1.Visible = true
 		lastFooterWidth = measureFooter(FOOTER_NAME, TextLabel1.TextSize)
-		lastBadge = 66
+		lastBadge = bar.ButtonsRight
 	end
 	Top:GetPropertyChangedSignal("AbsoluteSize"):Connect(LayoutTitleBar)
 	DropShadowHolder:GetPropertyChangedSignal("AbsoluteSize"):Connect(LayoutTitleBar)
@@ -1528,8 +1794,8 @@ function BananaHub:Window(GuiConfig)
 	Close.Text = ""
 	Close.AnchorPoint = Vector2.new(1, 0.5)
 	Close.BackgroundTransparency = 0.999
-	Close.Position = UDim2.new(1, -8, 0.5, 0)
-	Close.Size = UDim2.new(0, 25, 0, 25)
+	Close.Position = UDim2.new(1, -bar.BtnRight, 0.5, 0)
+	Close.Size = UDim2.new(0, bar.BtnSize, 0, bar.BtnSize)
 	Close.Name = "Close"
 	Close.Parent = Top
 
@@ -1544,8 +1810,8 @@ function BananaHub:Window(GuiConfig)
 	Min.Text = ""
 	Min.AnchorPoint = Vector2.new(1, 0.5)
 	Min.BackgroundTransparency = 0.999
-	Min.Position = UDim2.new(1, -38, 0.5, 0)
-	Min.Size = UDim2.new(0, 25, 0, 25)
+	Min.Position = UDim2.new(1, -(bar.BtnRight + bar.BtnSize + bar.BtnGap), 0.5, 0)
+	Min.Size = UDim2.new(0, bar.BtnSize, 0, bar.BtnSize)
 	Min.Name = "Min"
 	Min.Parent = Top
 
@@ -1562,13 +1828,20 @@ function BananaHub:Window(GuiConfig)
 	-- row. The numbers stay in GuiConfig["Tab Width"] so the content pane's
 	-- offsets below still line up.
 	if isCompact() then
-		local w = math.clamp(math.floor(viewport.X * 0.22), 76, 96)
+		-- Live viewport, not the load-time snapshot: after a rotation the
+		-- snapshot still describes the old orientation and the rail would be
+		-- sized for a screen that no longer exists.
+		local liveCam = workspace.CurrentCamera
+		local liveVp = (liveCam and liveCam.ViewportSize) or viewport
+		local w = math.clamp(math.floor((liveVp.X or 390) * 0.22), 76, 96)
 		GuiConfig["Tab Width"] = w
 	end
 
+	local bottomInset = M.SidebarInset + 1
+
 	LayersTab.BackgroundTransparency = 0.999
-	LayersTab.Position = UDim2.new(0, 9, 0, 50)
-	LayersTab.Size = UDim2.new(0, GuiConfig["Tab Width"], 1, -59)
+	LayersTab.Position = UDim2.new(0, M.SidebarInset, 0, M.ContentTop)
+	LayersTab.Size = UDim2.new(0, GuiConfig["Tab Width"], 1, -(M.ContentTop + bottomInset))
 	LayersTab.Name = "LayersTab"
 	LayersTab.Parent = Main
 
@@ -1579,14 +1852,14 @@ function BananaHub:Window(GuiConfig)
 	DecideFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 	DecideFrame.BackgroundTransparency = 0.85
 	DecideFrame.BorderSizePixel = 0
-	DecideFrame.Position = UDim2.new(0.5, 0, 0, 38)
+	DecideFrame.Position = UDim2.new(0.5, 0, 0, M.TitleBar)
 	DecideFrame.Size = UDim2.new(1, 0, 0, 1)
 	DecideFrame.Name = "DecideFrame"
 	DecideFrame.Parent = Main
 
 	Layers.BackgroundTransparency = 0.999
-	Layers.Position = UDim2.new(0, GuiConfig["Tab Width"] + 18, 0, 50)
-	Layers.Size = UDim2.new(1, -(GuiConfig["Tab Width"] + 9 + 18), 1, -59)
+	Layers.Position = UDim2.new(0, GuiConfig["Tab Width"] + M.SidebarInset + M.ContentGap, 0, M.ContentTop)
+	Layers.Size = UDim2.new(1, -(GuiConfig["Tab Width"] + M.SidebarInset + M.ContentGap), 1, -(M.ContentTop + bottomInset))
 	Layers.Name = "Layers"
 	Layers.Parent = Main
 
@@ -1596,11 +1869,11 @@ function BananaHub:Window(GuiConfig)
 	NameTab.Font = Enum.Font.GothamBold
 	NameTab.Text = ""
 	NameTab.TextColor3 = Color3.fromRGB(255, 255, 255)
-	NameTab.TextSize = 24
+	NameTab.TextSize = compact and 18 or 24
 	NameTab.TextWrapped = true
 	NameTab.TextXAlignment = Enum.TextXAlignment.Left
 	NameTab.BackgroundTransparency = 0.999
-	NameTab.Size = UDim2.new(1, 0, 0, 30)
+	NameTab.Size = UDim2.new(1, 0, 0, M.PageTitle)
 	NameTab.Name = "NameTab"
 	NameTab.Parent = Layers
 
@@ -1608,7 +1881,7 @@ function BananaHub:Window(GuiConfig)
 	LayersReal.BackgroundTransparency = 0.999
 	LayersReal.ClipsDescendants = true
 	LayersReal.Position = UDim2.new(0, 0, 1, 0)
-	LayersReal.Size = UDim2.new(1, 0, 1, -33)
+	LayersReal.Size = UDim2.new(1, 0, 1, -(M.PageTitle + 3))
 	LayersReal.Name = "LayersReal"
 	LayersReal.Parent = Layers
 
@@ -1625,22 +1898,35 @@ function BananaHub:Window(GuiConfig)
 	-- Key time pill: sits directly above the player footer in the sidebar. Only
 	-- built when a key is in play, so the free build's sidebar is unchanged.
 	--
-	-- The footer occupies the bottom 40px (-43..-3), so the pill takes a 20px
-	-- slot at -68..-48 and the tab list is shortened to match (see ScrollTab's
-	-- size below, which keys off BananaHub.KeyInfo).
+	-- Both the footer height and the tab list's bottom reservation are derived
+	-- from one table: the footer is `Foot.H` tall at the bottom of the rail, the
+	-- pill takes a 20px slot just above it, and ScrollTab stops short of the
+	-- pair. Hardcoding 40/48/28 here meant the compact rail's shorter footer
+	-- left a gap under the tab list.
+	local Foot = {
+		Compact = isCompact(),
+		PillH = 20,
+		PillGap = 8,
+	}
+	Foot.H = Foot.Compact and 34 or 40
+	Foot.Avatar = Foot.Compact and 22 or 26
+	Foot.TextX = Foot.Avatar + (Foot.Compact and 8 or 12)
 	if BananaHub.KeyInfo ~= nil and BananaHub.MakeKeyBadge then
 		local KeyTimePill = BananaHub.MakeKeyBadge(LayersTab)
 		KeyTimePill.AnchorPoint = Vector2.new(0, 1)
-		KeyTimePill.Position = UDim2.new(0, 3, 1, -48)
-		KeyTimePill.Size = UDim2.new(1, -18, 0, 20)
+		KeyTimePill.Position = UDim2.new(0, 3, 1, -(Foot.H + Foot.PillGap))
+		KeyTimePill.Size = UDim2.new(1, -18, 0, Foot.PillH)
 	end
 
+	-- The rail is only ~86px wide on a phone, so the avatar and its gap shrink
+	-- together (see Foot.Avatar / Foot.TextX above): a 26px headshot plus a 12px
+	-- gap left the player name under 40px of width.
 	local PlayerFooter = Instance.new("Frame")
 	PlayerFooter.Name = "PlayerFooter"
 	PlayerFooter.AnchorPoint = Vector2.new(0, 1)
 	PlayerFooter.BackgroundTransparency = 1
 	PlayerFooter.Position = UDim2.new(0, 3, 1, -3)
-	PlayerFooter.Size = UDim2.new(1, -18, 0, 40)
+	PlayerFooter.Size = UDim2.new(1, -18, 0, Foot.H)
 	PlayerFooter.Parent = LayersTab
 	PlayerFooter.ZIndex = 100
 
@@ -1651,7 +1937,7 @@ function BananaHub:Window(GuiConfig)
 	PlayerAvatar.BorderSizePixel = 0
 	PlayerAvatar.AnchorPoint = Vector2.new(0, 0.5)
 	PlayerAvatar.Position = UDim2.new(0, 0, 0.5, 2)
-	PlayerAvatar.Size = UDim2.new(0, 26, 0, 26)
+	PlayerAvatar.Size = UDim2.new(0, Foot.Avatar, 0, Foot.Avatar)
 	PlayerAvatar.Image = "rbxthumb://type=AvatarHeadShot&id=" .. LocalPlayer.UserId .. "&w=150&h=150"
 	PlayerAvatar.Parent = PlayerFooter
 
@@ -1670,12 +1956,12 @@ function BananaHub:Window(GuiConfig)
 	PlayerName.Font = Enum.Font.GothamBold
 	PlayerName.Text = LocalPlayer.DisplayName
 	PlayerName.TextColor3 = Color3.fromRGB(180, 180, 180)
-	PlayerName.TextSize = 11
+	PlayerName.TextSize = Foot.Compact and 10 or 11
 	PlayerName.TextXAlignment = Enum.TextXAlignment.Left
-	PlayerName.BackgroundTransparency = 1
-	PlayerName.Position = UDim2.new(0, 38, 0, -2)
-	PlayerName.Size = UDim2.new(1, -38, 0, 16)
 	PlayerName.TextTruncate = Enum.TextTruncate.AtEnd
+	PlayerName.BackgroundTransparency = 1
+	PlayerName.Position = UDim2.new(0, Foot.TextX, 0, -2)
+	PlayerName.Size = UDim2.new(1, -Foot.TextX, 0, 16)
 	PlayerName.Parent = PlayerFooter
 
 	-- Device + resolution line under the name. The resolution matters when
@@ -1737,14 +2023,16 @@ function BananaHub:Window(GuiConfig)
 	ScrollTab.Active = true
 	ScrollTab.ClipsDescendants = true
 	ScrollTab.BackgroundTransparency = 0.999
-	-- 50px normally clears the player footer; with the key pill in play the
-	-- list must stop above it instead of scrolling underneath. The search box
-	-- adds a further 30px at the top, so the list starts below it.
-	--
-	-- -104 with a key: 50 (top inset) + 34 (search box) + 20 (key pill) exactly
-	-- reaches the pill's top edge, so no tab row hides behind it.
-	ScrollTab.Position = UDim2.new(0, 3, 0, 34)
-	ScrollTab.Size = UDim2.new(1, 0, 1, ((BananaHub.KeyInfo ~= nil) and -104 or -84))
+	-- The list stops above the sidebar footer, and above the key pill when one
+	-- is present, rather than scrolling underneath them. Both heights come from
+	-- the same numbers used to place those two elements, so the compact rail's
+	-- shorter footer cannot leave a gap or a tab row hidden behind it.
+	local bottomReserve = 3 + Foot.H + 8
+	if BananaHub.KeyInfo ~= nil then
+		bottomReserve = bottomReserve + Foot.PillH + Foot.PillGap
+	end
+	ScrollTab.Position = UDim2.new(0, 3, 0, M.SearchH + 8)
+	ScrollTab.Size = UDim2.new(1, 0, 1, -((M.SearchH + 8) + bottomReserve))
 	ScrollTab.Name = "ScrollTab"
 	ScrollTab.Parent = LayersTab
 
@@ -1766,7 +2054,7 @@ function BananaHub:Window(GuiConfig)
 	SearchBox.BackgroundTransparency = 0.25
 	SearchBox.BorderSizePixel = 0
 	SearchBox.Position = UDim2.new(0, 3, 0, 4)
-	SearchBox.Size = UDim2.new(1, -12, 0, 26)
+	SearchBox.Size = UDim2.new(1, -12, 0, M.SearchH)
 	SearchBox.Parent = LayersTab
 
 	-- Corner, hairline border and magnifier glyph. Wrapped in a do-block so
@@ -1855,9 +2143,12 @@ function BananaHub:Window(GuiConfig)
 	SearchClear.Parent = SearchBox
 
 	-- Phone rail: shrink the text and the clear button to match the glyph.
+	-- The placeholder shortens too: the rail is only 76-96px wide, so the text
+	-- box is about 48px, where "Search..." does not fit and renders as "Searc".
 	if isCompact() then
-		SearchBox.Size = UDim2.new(1, -8, 0, 24)
+		SearchBox.Size = UDim2.new(1, -8, 0, M.SearchH)
 		SearchInput.TextSize = 10
+		SearchInput.PlaceholderText = "Find"
 		SearchInput.Position = UDim2.new(0, 20, 0, 0)
 		SearchInput.Size = UDim2.new(1, -36, 1, 0)
 		SearchClear.Position = UDim2.new(1, -2, 0.5, 0)
@@ -2099,8 +2390,20 @@ function BananaHub:Window(GuiConfig)
 		-- the module-level `viewport` is a snapshot from load time.
 		local liveCam = workspace.CurrentCamera
 		local liveVp = (liveCam and liveCam.ViewportSize) or viewport
-		local cardW = math.min(300, math.max(220, (liveVp.X or 800) * 0.86))
-		Card.Size = UDim2.new(0, math.floor(cardW), 0, 132)
+		local compact = isCompact()
+		local padX = compact and 14 or 18
+		local cardW = math.floor(math.clamp((liveVp.X or 800) - 40, 200, 300))
+		local titleSize = compact and 14 or 15
+		local descSize = compact and 11 or 12
+		local buttonH = compact and 28 or 30
+		local titleH = titleSize + 6
+		local btnGap = 8
+		-- The description is measured at the card's real text width, so a phone
+		-- card grows to fit a three-line sentence instead of clipping it.
+		local descText = "This unloads the script and stops everything that is running."
+		local descH = wrappedHeight(descText, descSize, Enum.Font.Gotham, cardW - (padX * 2))
+		local cardH = padX + titleH + 6 + descH + 12 + buttonH + padX
+		Card.Size = UDim2.new(0, cardW, 0, math.floor(cardH))
 		Card.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
 		Card.BorderSizePixel = 0
 		Card.ZIndex = 2
@@ -2129,26 +2432,27 @@ function BananaHub:Window(GuiConfig)
 		local CardTitle = Instance.new("TextLabel")
 		CardTitle.Text = "Close Banana Hub?"
 		CardTitle.Font = Enum.Font.GothamBold
-		CardTitle.TextSize = 15
+		CardTitle.TextSize = titleSize
 		CardTitle.TextColor3 = GuiConfig.Color
 		CardTitle.TextXAlignment = Enum.TextXAlignment.Left
+		CardTitle.TextTruncate = Enum.TextTruncate.AtEnd
 		CardTitle.BackgroundTransparency = 1
-		CardTitle.Position = UDim2.new(0, 18, 0, 16)
-		CardTitle.Size = UDim2.new(1, -36, 0, 20)
+		CardTitle.Position = UDim2.new(0, padX, 0, padX)
+		CardTitle.Size = UDim2.new(1, -(padX * 2), 0, titleH)
 		CardTitle.ZIndex = 3
 		CardTitle.Parent = Card
 
 		local CardDesc = Instance.new("TextLabel")
-		CardDesc.Text = "This unloads the script and stops everything that is running."
+		CardDesc.Text = descText
 		CardDesc.Font = Enum.Font.Gotham
-		CardDesc.TextSize = 12
+		CardDesc.TextSize = descSize
 		CardDesc.TextColor3 = Color3.fromRGB(160, 160, 160)
 		CardDesc.TextXAlignment = Enum.TextXAlignment.Left
 		CardDesc.TextYAlignment = Enum.TextYAlignment.Top
 		CardDesc.TextWrapped = true
 		CardDesc.BackgroundTransparency = 1
-		CardDesc.Position = UDim2.new(0, 18, 0, 42)
-		CardDesc.Size = UDim2.new(1, -36, 0, 34)
+		CardDesc.Position = UDim2.new(0, padX, 0, padX + titleH + 6)
+		CardDesc.Size = UDim2.new(1, -(padX * 2), 0, descH)
 		CardDesc.ZIndex = 3
 		CardDesc.Parent = Card
 
@@ -2157,14 +2461,14 @@ function BananaHub:Window(GuiConfig)
 		local CancelBtn = Instance.new("TextButton")
 		CancelBtn.Text = "Cancel"
 		CancelBtn.Font = Enum.Font.GothamBold
-		CancelBtn.TextSize = 12
+		CancelBtn.TextSize = descSize
 		CancelBtn.TextColor3 = Color3.fromRGB(220, 220, 220)
 		CancelBtn.BackgroundColor3 = SURFACE
 		CancelBtn.BorderSizePixel = 0
 		CancelBtn.AutoButtonColor = true
 		CancelBtn.AnchorPoint = Vector2.new(1, 1)
-		CancelBtn.Position = UDim2.new(1, -14, 1, -14)
-		CancelBtn.Size = UDim2.new(0.5, -21, 0, 30)
+		CancelBtn.Position = UDim2.new(1, -padX, 1, -padX)
+		CancelBtn.Size = UDim2.new(0.5, -(padX + btnGap / 2), 0, buttonH)
 		CancelBtn.ZIndex = 3
 		CancelBtn.Parent = Card
 		local CancelCorner = Instance.new("UICorner")
@@ -2174,14 +2478,14 @@ function BananaHub:Window(GuiConfig)
 		local CloseBtn = Instance.new("TextButton")
 		CloseBtn.Text = "Close"
 		CloseBtn.Font = Enum.Font.GothamBold
-		CloseBtn.TextSize = 12
+		CloseBtn.TextSize = descSize
 		CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 		CloseBtn.BackgroundColor3 = Color3.fromRGB(120, 32, 32)
 		CloseBtn.BorderSizePixel = 0
 		CloseBtn.AutoButtonColor = true
 		CloseBtn.AnchorPoint = Vector2.new(0, 1)
-		CloseBtn.Position = UDim2.new(0, 14, 1, -14)
-		CloseBtn.Size = UDim2.new(0.5, -21, 0, 30)
+		CloseBtn.Position = UDim2.new(0, padX, 1, -padX)
+		CloseBtn.Size = UDim2.new(0.5, -(padX + btnGap / 2), 0, buttonH)
 		CloseBtn.ZIndex = 3
 		CloseBtn.Parent = Card
 		local CloseCorner = Instance.new("UICorner")
@@ -3108,7 +3412,7 @@ function BananaHub:Window(GuiConfig)
 		Tab.BackgroundTransparency = (order == 0) and 0.92 or 0.999
 		Tab.BorderSizePixel = 0
 		Tab.LayoutOrder = order
-		Tab.Size = UDim2.new(1, 0, 0, 28)
+		Tab.Size = UDim2.new(1, 0, 0, M.TabRow)
 		Tab.Name = "Tab"
 		Tab.Parent = ScrollTab
 
@@ -3127,10 +3431,11 @@ function BananaHub:Window(GuiConfig)
 		TabName.Font = Enum.Font.GothamBold
 		TabName.Text = tabName
 		TabName.TextColor3 = Color3.fromRGB(255, 255, 255)
-		TabName.TextSize = 13
+		TabName.TextSize = M.FontTitle
 		TabName.TextXAlignment = Enum.TextXAlignment.Left
+		TabName.TextTruncate = Enum.TextTruncate.AtEnd
 		TabName.BackgroundTransparency = 0.999
-		TabName.Size = UDim2.new(1, 0, 1, 0)
+		TabName.Size = UDim2.new(1, -18, 1, 0)
 		TabName.Position = UDim2.new(0, 10, 0, 0)
 		TabName.Name = "TabName"
 		TabName.Parent = Tab
@@ -3154,23 +3459,67 @@ function BananaHub:Window(GuiConfig)
 		FeatureImg.Parent = Tab
 		FeatureImg.Visible = false
 
+		-- A phone rail is only ~85px wide. The desktop 16px icon at x=9 left the
+		-- tab name under 50px, which truncated every label to three letters, so
+		-- the icon and the gap in front of the text both shrink.
+		if compact then
+			FeatureImg.Position = UDim2.new(0, 6, 0, math.floor((M.TabRow - 13) / 2))
+			FeatureImg.Size = UDim2.new(0, 13, 0, 13)
+			TabName.Position = UDim2.new(0, 6, 0, 0)
+			TabName.Size = UDim2.new(1, -12, 1, 0)
+		end
+
 		local icon = resolveIcon(TabConfig.Icon)
 		if icon then
 			FeatureImg.Image = icon
 			FeatureImg.Visible = true
-			TabName.Position = UDim2.new(0, 32, 0, 0)
-			TabName.Size = UDim2.new(1, -38, 1, 0)
+			if compact then
+				TabName.Position = UDim2.new(0, 23, 0, 0)
+				TabName.Size = UDim2.new(1, -27, 1, 0)
+			else
+				TabName.Position = UDim2.new(0, 32, 0, 0)
+				TabName.Size = UDim2.new(1, -38, 1, 0)
+			end
+		end
+
+		-- The compact rail leaves the label 49-69px, and "Auto Summit" at 12px
+		-- is ~74px, so it truncated to "Auto Sum...". Step the size down until
+		-- the whole name fits instead; below 8px the truncation is the lesser
+		-- evil, so that is the floor. Runs after the icon has claimed its
+		-- width, and re-measures on resize (a rotation changes the rail).
+		if compact then
+			local function fitTabName()
+				local room = TabName.AbsoluteSize.X
+				if room <= 0 then return end
+				local size = M.FontTitle
+				while size > 8 do
+					local ok, bounds = pcall(function()
+						return TextService:GetTextSize(tabName, size, Enum.Font.GothamBold,
+							Vector2.new(1000, 100))
+					end)
+					if not ok or type(bounds) ~= "Vector2" then break end
+					if bounds.X <= room then break end
+					size = size - 1
+				end
+				TabName.TextSize = size
+			end
+			TabName:GetPropertyChangedSignal("AbsoluteSize"):Connect(fitTabName)
+			task.defer(fitTabName)
 		end
 
 		if order == 0 then
 			pcall(function() LayersPageLayout:JumpToIndex(0) end)
 			NameTab.Text = tabName
 
+			-- Selection bar: a short vertical accent on the left edge of the
+			-- active tab. Centred in the row from the row metric, so a compact
+			-- 26px row does not get a bar that overhangs its bottom edge.
+			local chooseH = math.max(12, M.TabRow - 8)
 			local ChooseFrame = Instance.new("Frame")
 			ChooseFrame.BackgroundColor3 = GuiConfig.Color
 			ChooseFrame.BorderSizePixel = 0
-			ChooseFrame.Position = UDim2.new(0, 0, 0, 5)
-			ChooseFrame.Size = UDim2.new(0, 3, 0, 20)
+			ChooseFrame.Position = UDim2.new(0, 0, 0.5, -chooseH / 2)
+			ChooseFrame.Size = UDim2.new(0, 3, 0, chooseH)
 			ChooseFrame.Name = "ChooseFrame"
 			ChooseFrame.Parent = Tab
 
@@ -3223,8 +3572,9 @@ function BananaHub:Window(GuiConfig)
 				):Play()
 
 				FrameChoose.Parent = Tab
-				FrameChoose.Position = UDim2.new(0, 0, 0, 5)
-				FrameChoose.Size = UDim2.new(0, 3, 0, 20)
+				local moveH = math.max(12, M.TabRow - 8)
+				FrameChoose.Position = UDim2.new(0, 0, 0.5, -moveH / 2)
+				FrameChoose.Size = UDim2.new(0, 3, 0, moveH)
 
 				pcall(function() LayersPageLayout:JumpToIndex(Tab.LayoutOrder) end)
 				task.wait(0.05)
@@ -3264,7 +3614,7 @@ function BananaHub:Window(GuiConfig)
 			Section.BorderSizePixel = 0
 			Section.LayoutOrder = CountSection
 			Section.ClipsDescendants = true
-			Section.Size = UDim2.new(1, 0, 0, 30)
+			Section.Size = UDim2.new(1, 0, 0, M.SectionHeader)
 			Section.Name = "Section"
 			Section.Parent = ScrolLayers
 
@@ -3273,7 +3623,7 @@ function BananaHub:Window(GuiConfig)
 			SectionReal.BackgroundTransparency = 0.2
 			SectionReal.BorderSizePixel = 0
 			SectionReal.Position = UDim2.new(0.5, 0, 0, 0)
-			SectionReal.Size = UDim2.new(1, -2, 0, 30)
+			SectionReal.Size = UDim2.new(1, -2, 0, M.SectionHeader)
 			SectionReal.Name = "SectionReal"
 			SectionReal.Parent = Section
 
@@ -3307,19 +3657,20 @@ function BananaHub:Window(GuiConfig)
 			SectionTitle.Font = Enum.Font.GothamBold
 			SectionTitle.Text = title
 			SectionTitle.TextColor3 = Color3.fromRGB(231, 231, 231)
-			SectionTitle.TextSize = 13
+			SectionTitle.TextSize = M.FontTitle
 			SectionTitle.TextXAlignment = Enum.TextXAlignment.Left
+			SectionTitle.TextTruncate = Enum.TextTruncate.AtEnd
 			SectionTitle.AnchorPoint = Vector2.new(0, 0.5)
 			SectionTitle.BackgroundTransparency = 0.999
 			SectionTitle.Position = UDim2.new(0, 10, 0.5, 0)
-			SectionTitle.Size = UDim2.new(1, -50, 0, 13)
+			SectionTitle.Size = UDim2.new(1, -50, 1, 0)
 			SectionTitle.Name = "SectionTitle"
 			SectionTitle.Parent = SectionReal
 
 			SectionDecideFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 			SectionDecideFrame.AnchorPoint = Vector2.new(0.5, 0)
 			SectionDecideFrame.BorderSizePixel = 0
-			SectionDecideFrame.Position = UDim2.new(0.5, 0, 0, 33)
+			SectionDecideFrame.Position = UDim2.new(0.5, 0, 0, M.SectionHeader + 3)
 			SectionDecideFrame.Size = UDim2.new(0, 0, 0, 2)
 			SectionDecideFrame.Name = "SectionDecideFrame"
 			SectionDecideFrame.Parent = Section
@@ -3338,7 +3689,7 @@ function BananaHub:Window(GuiConfig)
 			SectionAdd.BorderSizePixel = 0
 			SectionAdd.ClipsDescendants = true
 			SectionAdd.LayoutOrder = 1
-			SectionAdd.Position = UDim2.new(0.5, 0, 0, 38)
+			SectionAdd.Position = UDim2.new(0.5, 0, 0, M.SectionHeader + 8)
 			SectionAdd.Size = UDim2.new(1, 0, 0, 0)
 			SectionAdd.Name = "SectionAdd"
 			SectionAdd.Parent = Section
@@ -3371,7 +3722,10 @@ function BananaHub:Window(GuiConfig)
 
 			local function UpdateSizeSection()
 				if not OpenSection then return end
-				local total = 38
+				-- The header height is a metric, so it is added once here rather
+				-- than being the literal 38 that used to be duplicated in three
+				-- places (here, the collapse tween and SectionAdd's offset).
+				local total = M.SectionHeader + 8
 				for _, v in ipairs(SectionAdd:GetChildren()) do
 					if v.Name ~= "UIListLayout" and v.Name ~= "UICorner" then
 						-- Hidden rows take no space: UIListLayout skips them, so
@@ -3384,7 +3738,7 @@ function BananaHub:Window(GuiConfig)
 				end
 				local tweenInfo = TweenInfo.new(ANIM_TIME, ANIM_STYLE, ANIM_DIR)
 				TweenService:Create(Section, tweenInfo, { Size = UDim2.new(1, 1, 0, total) }):Play()
-				TweenService:Create(SectionAdd, tweenInfo, { Size = UDim2.new(1, 0, 0, total - 38) }):Play()
+				TweenService:Create(SectionAdd, tweenInfo, { Size = UDim2.new(1, 0, 0, total - (M.SectionHeader + 8)) }):Play()
 				TweenService:Create(SectionDecideFrame, tweenInfo, { Size = UDim2.new(1, 0, 0, 2) }):Play()
 				task.delay(ANIM_TIME, UpdateSizeScroll)
 			end
@@ -3406,7 +3760,7 @@ function BananaHub:Window(GuiConfig)
 				else
 					TweenService:Create(SectionTitle, TweenInfo.new(0.2), { TextColor3 = Color3.fromRGB(231, 231, 231) }):Play()
 					TweenService:Create(FeatureImg2, tweenInfo, { Rotation = -90 }):Play()
-					TweenService:Create(Section, tweenInfo, { Size = UDim2.new(1, 1, 0, 30) }):Play()
+					TweenService:Create(Section, tweenInfo, { Size = UDim2.new(1, 1, 0, M.SectionHeader) }):Play()
 					TweenService:Create(SectionDecideFrame, tweenInfo, { Size = UDim2.new(0, 0, 0, 2) }):Play()
 				end
 
@@ -3479,7 +3833,7 @@ function BananaHub:Window(GuiConfig)
 				OpenSection = false
 				TweenService:Create(SectionTitle, TweenInfo.new(0.2), { TextColor3 = Color3.fromRGB(231, 231, 231) }):Play()
 				TweenService:Create(FeatureImg2, TweenInfo.new(ANIM_TIME, ANIM_STYLE, ANIM_DIR), { Rotation = -90 }):Play()
-				TweenService:Create(Section, TweenInfo.new(ANIM_TIME, ANIM_STYLE, ANIM_DIR), { Size = UDim2.new(1, 1, 0, 30) }):Play()
+				TweenService:Create(Section, TweenInfo.new(ANIM_TIME, ANIM_STYLE, ANIM_DIR), { Size = UDim2.new(1, 1, 0, M.SectionHeader) }):Play()
 				TweenService:Create(SectionDecideFrame, TweenInfo.new(ANIM_TIME, ANIM_STYLE, ANIM_DIR), { Size = UDim2.new(0, 0, 0, 2) }):Play()
 				task.delay(ANIM_TIME, UpdateSizeScroll)
 			end
@@ -3536,7 +3890,7 @@ function BananaHub:Window(GuiConfig)
 				Toggle.BackgroundTransparency = 0.2
 				Toggle.BorderSizePixel = 0
 				Toggle.LayoutOrder = nextOrder()
-				Toggle.Size = UDim2.new(1, 0, 0, 46)
+				Toggle.Size = UDim2.new(1, 0, 0, M.Row)
 				Toggle.Name = "Toggle"
 				Toggle.Parent = SectionAdd
 
@@ -3545,29 +3899,35 @@ function BananaHub:Window(GuiConfig)
 
 				ToggleTitle.Font = Enum.Font.GothamBold
 				ToggleTitle.Text = widgetTitle
-				ToggleTitle.TextSize = 13
+				ToggleTitle.TextSize = M.FontTitle
 				ToggleTitle.TextColor3 = Color3.fromRGB(231, 231, 231)
 				ToggleTitle.TextXAlignment = Enum.TextXAlignment.Left
 				ToggleTitle.BackgroundTransparency = 1
-				ToggleTitle.Position = UDim2.new(0, 10, 0, 10)
-				ToggleTitle.Size = UDim2.new(1, -70, 0, 13)
+				ToggleTitle.Position = UDim2.new(0, M.PadX, 0, 0)
+				-- Vertically centred in the row. A fixed 10px top offset left the
+				-- label high and cramped once the row got shorter.
+				ToggleTitle.Size = UDim2.new(1, -(M.PadX + 60), 1, 0)
+				ToggleTitle.TextYAlignment = Enum.TextYAlignment.Center
 				ToggleTitle.TextWrapped = true
 				ToggleTitle.Name = "ToggleTitle"
 				ToggleTitle.Parent = Toggle
 
 				if cfg.Desc or cfg.Content then
-					Toggle.Size = UDim2.new(1, 0, 0, 62)
+					Toggle.Size = UDim2.new(1, 0, 0, M.RowWithDesc)
+					ToggleTitle.TextYAlignment = Enum.TextYAlignment.Top
+					ToggleTitle.Position = UDim2.new(0, M.PadX, 0, 8)
+					ToggleTitle.Size = UDim2.new(1, -(M.PadX + 60), 0, 13)
 				end
 
 				local Desc = Instance.new("TextLabel")
 				Desc.Font = Enum.Font.Gotham
 				Desc.Text = tostring(cfg.Desc or cfg.Content or "")
-				Desc.TextSize = 11
+				Desc.TextSize = M.FontDesc
 				Desc.TextColor3 = Color3.fromRGB(150, 150, 150)
 				Desc.TextXAlignment = Enum.TextXAlignment.Left
 				Desc.BackgroundTransparency = 1
-				Desc.Position = UDim2.new(0, 10, 0, 27)
-				Desc.Size = UDim2.new(1, -70, 0, 12)
+				Desc.Position = UDim2.new(0, M.PadX, 0, 23)
+				Desc.Size = UDim2.new(1, -(M.PadX + 60), 0, 12)
 				Desc.TextWrapped = true
 				Desc.Name = "ToggleDesc"
 				Desc.Parent = Toggle
@@ -3707,7 +4067,7 @@ function BananaHub:Window(GuiConfig)
 				Slider.BackgroundTransparency = 0.2
 				Slider.BorderSizePixel = 0
 				Slider.LayoutOrder = nextOrder()
-				Slider.Size = UDim2.new(1, 0, 0, 46)
+				Slider.Size = UDim2.new(1, 0, 0, M.Row)
 				Slider.Name = "Slider"
 				Slider.Parent = SectionAdd
 
@@ -3717,18 +4077,28 @@ function BananaHub:Window(GuiConfig)
 				SliderTitle.Font = Enum.Font.GothamBold
 				SliderTitle.Text = widgetTitle
 				SliderTitle.TextColor3 = Color3.fromRGB(231, 231, 231)
-				SliderTitle.TextSize = 13
+				SliderTitle.TextSize = M.FontTitle
 				SliderTitle.TextXAlignment = Enum.TextXAlignment.Left
+				SliderTitle.TextYAlignment = Enum.TextYAlignment.Center
 				SliderTitle.BackgroundTransparency = 1
-				SliderTitle.Position = UDim2.new(0, 10, 0, 8)
-				SliderTitle.Size = UDim2.new(1, -180, 0, 13)
+				SliderTitle.Position = UDim2.new(0, M.PadX, 0, 0)
+				-- Reserve room for the value box and the track. The three pieces
+				-- are laid out right-to-left (track, value box, title), so the
+				-- title's width is the row minus everything to its right. On a
+				-- phone that is ~120px, where the old fixed 180px reservation
+				-- left the title nothing at all.
+				-- M.PadX is part of the reservation because the title is offset
+				-- from the left by it: without it the text box ran 2px past the
+				-- value box on a phone.
+				SliderTitle.Size = UDim2.new(1, -(M.PadX + M.SliderBoxRight + M.SliderBox + 6), 1, 0)
+				SliderTitle.TextTruncate = Enum.TextTruncate.AtEnd
 				SliderTitle.Name = "SliderTitle"
 				SliderTitle.Parent = Slider
 
-				SliderInput.AnchorPoint = Vector2.new(0, 0.5)
+				SliderInput.AnchorPoint = Vector2.new(1, 0.5)
 				SliderInput.BackgroundTransparency = 1
-				SliderInput.Position = UDim2.new(1, -176, 0.5, 0)
-				SliderInput.Size = UDim2.new(0, 52, 0, 20)
+				SliderInput.Position = UDim2.new(1, -M.SliderBoxRight, 0.5, 0)
+				SliderInput.Size = UDim2.new(0, M.SliderBox, 0, 20)
 				SliderInput.Name = "SliderInput"
 				SliderInput.Parent = Slider
 
@@ -3749,12 +4119,26 @@ function BananaHub:Window(GuiConfig)
 				SliderFrame.BackgroundColor3 = SURFACE_SOFT
 				SliderFrame.BackgroundTransparency = 0.35
 				SliderFrame.BorderSizePixel = 0
-				SliderFrame.Position = UDim2.new(1, -20, 0.5, 0)
-				SliderFrame.Size = UDim2.new(0, 100, 0, 3)
+				SliderFrame.Position = UDim2.new(1, -M.PadX, 0.5, 0)
+				SliderFrame.Size = UDim2.new(0, M.SliderTrack, 0, 3)
 				SliderFrame.Name = "SliderFrame"
 				SliderFrame.Parent = Slider
 
 				UICorner17.Parent = SliderFrame
+
+				-- The track is only 3px tall, which is a fine click target for a
+				-- mouse and an impossible one for a fingertip. This invisible pad
+				-- sits over it and takes the drag input instead; it is bigger than
+				-- the track but still inside the row, so it never overlaps the
+				-- value box.
+				local SliderHit = Instance.new("Frame")
+				SliderHit.BackgroundTransparency = 1
+				SliderHit.Active = true
+				SliderHit.AnchorPoint = Vector2.new(1, 0.5)
+				SliderHit.Position = UDim2.new(1, -(M.PadX - 4), 0.5, 0)
+				SliderHit.Size = UDim2.new(0, M.SliderTrack + 8, 0, 22)
+				SliderHit.Name = "SliderHit"
+				SliderHit.Parent = Slider
 
 				SliderDraggable.AnchorPoint = Vector2.new(0, 0.5)
 				SliderDraggable.BackgroundColor3 = GuiConfig.Color
@@ -3814,7 +4198,9 @@ function BananaHub:Window(GuiConfig)
 					SliderFunc:Set(min + (max - min) * rel)
 				end
 
-				SliderFrame.InputBegan:Connect(function(input)
+				-- The drag handlers sit on the invisible hit pad rather than on the
+				-- 3px track, so a fingertip anywhere near the bar grabs it.
+				local function beginDrag(input)
 					if locked then return end
 					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 						-- Dragging is an execution; no open list should hover over it.
@@ -3822,13 +4208,17 @@ function BananaHub:Window(GuiConfig)
 						Dragging = true
 						setFromX(input.Position.X)
 					end
-				end)
+				end
+				SliderHit.InputBegan:Connect(beginDrag)
+				SliderFrame.InputBegan:Connect(beginDrag)
 
-				SliderFrame.InputEnded:Connect(function(input)
+				local function endDrag(input)
 					if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 						Dragging = false
 					end
-				end)
+				end
+				SliderHit.InputEnded:Connect(endDrag)
+				SliderFrame.InputEnded:Connect(endDrag)
 
 				UserInputService.InputChanged:Connect(function(input)
 					if Dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
@@ -3882,7 +4272,7 @@ function BananaHub:Window(GuiConfig)
 				Dropdown.BackgroundTransparency = 0.2
 				Dropdown.BorderSizePixel = 0
 				Dropdown.LayoutOrder = nextOrder()
-				Dropdown.Size = UDim2.new(1, 0, 0, 46)
+				Dropdown.Size = UDim2.new(1, 0, 0, M.Row)
 				Dropdown.Name = "Dropdown"
 				Dropdown.Parent = SectionAdd
 
@@ -3892,29 +4282,36 @@ function BananaHub:Window(GuiConfig)
 				DropdownTitle.Font = Enum.Font.GothamBold
 				DropdownTitle.Text = widgetTitle
 				DropdownTitle.TextColor3 = Color3.fromRGB(231, 231, 231)
-				DropdownTitle.TextSize = 13
+				DropdownTitle.TextSize = M.FontTitle
 				DropdownTitle.TextXAlignment = Enum.TextXAlignment.Left
+				DropdownTitle.TextYAlignment = Enum.TextYAlignment.Center
 				DropdownTitle.BackgroundTransparency = 1
-				DropdownTitle.Position = UDim2.new(0, 10, 0, 8)
-				DropdownTitle.Size = UDim2.new(1, -180, 0, 13)
+				DropdownTitle.Position = UDim2.new(0, M.PadX, 0, 0)
+				-- M.PadX is included in the reservation: the title is offset from
+				-- the left by it, so leaving it out let the label run under the
+				-- "Select Option" pill on a narrow rail.
+				DropdownTitle.Size = UDim2.new(1, -(M.PadX + M.DropdownReserve), 1, 0)
+				DropdownTitle.TextTruncate = Enum.TextTruncate.AtEnd
 				DropdownTitle.Name = "DropdownTitle"
 				DropdownTitle.Parent = Dropdown
 
 				-- Optional hint under the dropdown title. Opt-in, exactly like the
-				-- Button desc above: no Desc keeps the original 46px row.
+				-- Button desc above: no Desc keeps the base row height.
 				local dropdownDesc = cfg.Desc or cfg.Content
 				if dropdownDesc and tostring(dropdownDesc) ~= "" then
-					Dropdown.Size = UDim2.new(1, 0, 0, 58)
-					DropdownTitle.Size = UDim2.new(1, -180, 0, 13)
+					Dropdown.Size = UDim2.new(1, 0, 0, M.RowWithDesc)
+					DropdownTitle.TextYAlignment = Enum.TextYAlignment.Top
+					DropdownTitle.Position = UDim2.new(0, M.PadX, 0, 7)
+					DropdownTitle.Size = UDim2.new(1, -(M.PadX + M.DropdownReserve), 0, 13)
 					local DropdownDesc = Instance.new("TextLabel")
 					DropdownDesc.Font = Enum.Font.Gotham
 					DropdownDesc.Text = tostring(dropdownDesc)
 					DropdownDesc.TextColor3 = Color3.fromRGB(150, 150, 150)
-					DropdownDesc.TextSize = 11
+					DropdownDesc.TextSize = M.FontDesc
 					DropdownDesc.TextXAlignment = Enum.TextXAlignment.Left
 					DropdownDesc.BackgroundTransparency = 1
-					DropdownDesc.Position = UDim2.new(0, 10, 0, 23)
-					DropdownDesc.Size = UDim2.new(1, -180, 0, 12)
+					DropdownDesc.Position = UDim2.new(0, M.PadX, 0, 22)
+					DropdownDesc.Size = UDim2.new(1, -(M.PadX + M.DropdownReserve), 0, 12)
 					DropdownDesc.TextTruncate = Enum.TextTruncate.AtEnd
 					DropdownDesc.Name = "DropdownDesc"
 					DropdownDesc.Parent = Dropdown
@@ -3924,7 +4321,7 @@ function BananaHub:Window(GuiConfig)
 				SelectOptionsFrame.BackgroundColor3 = SURFACE
 				SelectOptionsFrame.BackgroundTransparency = 0.15
 				SelectOptionsFrame.Position = UDim2.new(1, -7, 0.5, 0)
-				SelectOptionsFrame.Size = UDim2.new(0, 148, 0, 26)
+				SelectOptionsFrame.Size = UDim2.new(0, M.SelectW, 0, M.SelectH)
 				SelectOptionsFrame.Name = "SelectOptionsFrame"
 				SelectOptionsFrame.Parent = Dropdown
 
@@ -4141,7 +4538,7 @@ function BananaHub:Window(GuiConfig)
 
 						-- Touch needs a taller target than a mouse. 26px rows are
 						-- comfortable with a cursor and fiddly with a fingertip.
-						local optionRowH = isCompact() and 38 or 26
+						local optionRowH = M.OptionRow
 						local rowFrame = Instance.new("Frame")
 						local rowButton = Instance.new("TextButton")
 						local rowLabel = Instance.new("TextLabel")
@@ -4188,7 +4585,7 @@ function BananaHub:Window(GuiConfig)
 						end)
 					end
 
-					expandedHeight = math.min(#DropdownFunc.Options, isCompact() and 6 or 9) * (isCompact() and 38 or 26) + 8
+					expandedHeight = math.min(#DropdownFunc.Options, isCompact() and 6 or 9) * M.OptionRow + 8
 					refreshVisuals()
 				end
 
@@ -4470,7 +4867,7 @@ function BananaHub:Window(GuiConfig)
 				Input.BackgroundTransparency = 0.2
 				Input.BorderSizePixel = 0
 				Input.LayoutOrder = nextOrder()
-				Input.Size = UDim2.new(1, 0, 0, 68)
+				Input.Size = UDim2.new(1, 0, 0, M.InputRow)
 				Input.Name = "Input"
 				Input.Parent = SectionAdd
 
@@ -4480,11 +4877,11 @@ function BananaHub:Window(GuiConfig)
 				InputTitle.Font = Enum.Font.GothamBold
 				InputTitle.Text = widgetTitle
 				InputTitle.TextColor3 = Color3.fromRGB(231, 231, 231)
-				InputTitle.TextSize = 13
+				InputTitle.TextSize = M.FontTitle
 				InputTitle.TextXAlignment = Enum.TextXAlignment.Left
 				InputTitle.BackgroundTransparency = 1
-				InputTitle.Position = UDim2.new(0, 10, 0, 8)
-				InputTitle.Size = UDim2.new(1, -20, 0, 15)
+				InputTitle.Position = UDim2.new(0, M.PadX, 0, 5)
+				InputTitle.Size = UDim2.new(1, -(M.PadX * 2), 0, 14)
 				InputTitle.Name = "InputTitle"
 				InputTitle.Parent = Input
 
@@ -4492,8 +4889,8 @@ function BananaHub:Window(GuiConfig)
 				InputFrame.BackgroundTransparency = 0.3
 				InputFrame.BorderSizePixel = 0
 				InputFrame.ClipsDescendants = true
-				InputFrame.Position = UDim2.new(0, 10, 0, 30)
-				InputFrame.Size = UDim2.new(1, -20, 0, 26)
+				InputFrame.Position = UDim2.new(0, M.PadX, 0, 22)
+				InputFrame.Size = UDim2.new(1, -(M.PadX * 2), 0, M.InputBoxH)
 				InputFrame.Name = "InputFrame"
 				InputFrame.Parent = Input
 
@@ -4553,7 +4950,7 @@ function BananaHub:Window(GuiConfig)
 				local ButtonLabel = Instance.new("TextLabel")
 
 				Button.BackgroundTransparency = 1
-				Button.Size = UDim2.new(1, 0, 0, 34)
+				Button.Size = UDim2.new(1, 0, 0, M.Button)
 				Button.LayoutOrder = nextOrder()
 				Button.Name = "Button"
 				Button.Parent = SectionAdd
@@ -4573,7 +4970,7 @@ function BananaHub:Window(GuiConfig)
 				ButtonLabel.Font = Enum.Font.GothamBold
 				ButtonLabel.Text = widgetTitle
 				ButtonLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-				ButtonLabel.TextSize = 12
+				ButtonLabel.TextSize = M.FontTitle
 				ButtonLabel.BackgroundTransparency = 1
 				ButtonLabel.Size = UDim2.new(1, -16, 1, 0)
 				ButtonLabel.Position = UDim2.new(0, 8, 0, 0)
@@ -4582,20 +4979,20 @@ function BananaHub:Window(GuiConfig)
 				ButtonLabel.Parent = MainButton
 
 				-- Optional hint under the button. Opt-in: a caller that passes no
-				-- Desc keeps the original 34px row exactly as it was, so none of
-				-- the existing scripts change shape.
+				-- Desc keeps the base row exactly as it was, so none of the
+				-- existing scripts change shape.
 				local buttonDesc = cfg.Desc or cfg.Content
 				if buttonDesc and tostring(buttonDesc) ~= "" then
-					Button.Size = UDim2.new(1, 0, 0, 50)
-					MainButton.Size = UDim2.new(1, 0, 0, 34)
+					Button.Size = UDim2.new(1, 0, 0, M.ButtonWithDesc)
+					MainButton.Size = UDim2.new(1, 0, 0, M.Button)
 					local ButtonDesc = Instance.new("TextLabel")
 					ButtonDesc.Font = Enum.Font.Gotham
 					ButtonDesc.Text = tostring(buttonDesc)
 					ButtonDesc.TextColor3 = Color3.fromRGB(150, 150, 150)
-					ButtonDesc.TextSize = 11
+					ButtonDesc.TextSize = M.FontDesc
 					ButtonDesc.TextXAlignment = Enum.TextXAlignment.Left
 					ButtonDesc.BackgroundTransparency = 1
-					ButtonDesc.Position = UDim2.new(0, 8, 0, 36)
+					ButtonDesc.Position = UDim2.new(0, 8, 0, M.Button + 2)
 					ButtonDesc.Size = UDim2.new(1, -16, 0, 12)
 					ButtonDesc.TextTruncate = Enum.TextTruncate.AtEnd
 					ButtonDesc.Name = "ButtonDesc"
@@ -4642,7 +5039,7 @@ function BananaHub:Window(GuiConfig)
 				Paragraph.BackgroundTransparency = 0.2
 				Paragraph.BorderSizePixel = 0
 				Paragraph.LayoutOrder = nextOrder()
-				Paragraph.Size = UDim2.new(1, 0, 0, 44)
+				Paragraph.Size = UDim2.new(1, 0, 0, M.Paragraph)
 				Paragraph.Name = "Paragraph"
 				Paragraph.Parent = SectionAdd
 
@@ -4652,23 +5049,23 @@ function BananaHub:Window(GuiConfig)
 				ParagraphTitle.Font = Enum.Font.GothamBold
 				ParagraphTitle.Text = widgetTitle
 				ParagraphTitle.TextColor3 = Color3.fromRGB(231, 231, 231)
-				ParagraphTitle.TextSize = 13
+				ParagraphTitle.TextSize = M.FontTitle
 				ParagraphTitle.TextXAlignment = Enum.TextXAlignment.Left
 				ParagraphTitle.BackgroundTransparency = 1
-				ParagraphTitle.Position = UDim2.new(0, 10, 0, 8)
-				ParagraphTitle.Size = UDim2.new(1, -20, 0, 13)
+				ParagraphTitle.Position = UDim2.new(0, M.PadX, 0, 6)
+				ParagraphTitle.Size = UDim2.new(1, -(M.PadX * 2), 0, 13)
 				ParagraphTitle.Name = "ParagraphTitle"
 				ParagraphTitle.Parent = Paragraph
 
 				ParagraphContent.Font = Enum.Font.Gotham
 				ParagraphContent.Text = body
 				ParagraphContent.TextColor3 = Color3.fromRGB(170, 170, 170)
-				ParagraphContent.TextSize = 11
+				ParagraphContent.TextSize = M.FontDesc
 				ParagraphContent.TextXAlignment = Enum.TextXAlignment.Left
 				ParagraphContent.TextYAlignment = Enum.TextYAlignment.Top
 				ParagraphContent.BackgroundTransparency = 1
-				ParagraphContent.Position = UDim2.new(0, 10, 0, 24)
-				ParagraphContent.Size = UDim2.new(1, -20, 0, 14)
+				ParagraphContent.Position = UDim2.new(0, M.PadX, 0, 21)
+				ParagraphContent.Size = UDim2.new(1, -(M.PadX * 2), 0, 14)
 				ParagraphContent.TextWrapped = true
 				ParagraphContent.Name = "ParagraphContent"
 				ParagraphContent.Parent = Paragraph
@@ -4676,31 +5073,30 @@ function BananaHub:Window(GuiConfig)
 				local ParagraphFunc = {Type = "Paragraph", Value = body}
 
 				-- Live text. The row AND the label both have to grow: the label is
-				-- a fixed 14px strip otherwise, so a second line was silently
-				-- clipped. Explicit newlines count as line breaks here - a plain
-				-- #text/46 estimate folded a 6-line card into 2 lines and cut it
-				-- off. 46 characters is a deliberately conservative wrap width,
-				-- so the estimate errs towards a little extra height rather than
-				-- a cut-off line.
+				-- a fixed strip otherwise, so a second line was silently clipped.
+				--
+				-- The height is MEASURED with TextService at the card's real text
+				-- width instead of being estimated from a character count. The old
+				-- #line/46 estimate assumed a fixed glyph width, so it over-padded
+				-- short lines and still clipped long ones on a narrow phone.
 				local lastHeight = -1
+				local lineH = M.FontDesc + 3
 				function ParagraphFunc:SetContent(text)
 					local value = tostring(text)
 					ParagraphContent.Text = value
-					local lines = 0
-					for line in (value .. "\n"):gmatch("([^\n]*)\n") do
-						lines = lines + math.max(1, math.ceil(#line / 46))
-					end
-					if lines < 1 then lines = 1 end
-					local height = lines * 14
-					ParagraphContent.Size = UDim2.new(1, -20, 0, height)
+					local width = Paragraph.AbsoluteSize.X - (M.PadX * 2)
+					if width <= 0 then width = 260 end
+					local height = math.max(lineH,
+						wrappedHeight(value, M.FontDesc, Enum.Font.Gotham, width))
+					ParagraphContent.Size = UDim2.new(1, -(M.PadX * 2), 0, height)
 					if height == lastHeight then return end
 					lastHeight = height
-					-- 24px header + the text block + 6px of breathing room, so the
+					-- 21px header + the text block + 5px of breathing room, so the
 					-- last line never sits flush against the row's bottom edge.
-					Paragraph.Size = UDim2.new(1, 0, 0, 30 + height)
+					Paragraph.Size = UDim2.new(1, 0, 0, 21 + height + 5)
 					-- The section measures its children once, when they are added.
 					-- A card that grows afterwards would otherwise be clipped at
-					-- its original 44px, so re-measure when the height changes.
+					-- its original height, so re-measure when the height changes.
 					-- Re-measuring every update would restart the section tween
 					-- once a second for a card whose text length never moved.
 					if SectionRecord and SectionRecord.Refresh then
@@ -5128,6 +5524,7 @@ end
 -- longer has a key-time row - so the pill has to carry it on its own.
 function BananaHub.MakeKeyBadge(parent)
 	local KC = BananaHub.KeyColors
+	local compact = isCompact()
 
 	local holder = Instance.new("Frame")
 	holder.Name = "KeyTimeBadge"
@@ -5141,6 +5538,12 @@ function BananaHub.MakeKeyBadge(parent)
 	-- padding around the glyph, so the visible mark was only about 7px in a
 	-- 12px box and read as a smudge. The box is oversized on purpose to give the
 	-- glyph itself room; Stretch then fills the box, which is what we want.
+	-- On the compact rail (~58px of usable width) the pair has to give a little
+	-- so "LIFETIME" still fits without being cut. The rail can be as narrow as
+	-- 76px, where the pill is 58px wide and the label only has ~40px left, so
+	-- the text drops a size as well as the icon.
+	local iconSize = compact and 13 or 16
+	local textX = iconSize + 4
 	local icon = Instance.new("ImageLabel")
 	icon.Name = "Icon"
 	icon.BackgroundTransparency = 1
@@ -5148,7 +5551,7 @@ function BananaHub.MakeKeyBadge(parent)
 	icon.ImageColor3 = KC.MUTED
 	icon.AnchorPoint = Vector2.new(0, 0.5)
 	icon.Position = UDim2.new(0, 0, 0.5, 0)
-	icon.Size = UDim2.new(0, 16, 0, 16)
+	icon.Size = UDim2.new(0, iconSize, 0, iconSize)
 	icon.ZIndex = 101
 	icon.Parent = holder
 
@@ -5157,11 +5560,11 @@ function BananaHub.MakeKeyBadge(parent)
 	label.Font = Enum.Font.GothamBold
 	label.Text = ""
 	label.TextColor3 = KC.MUTED
-	label.TextSize = 10
+	label.TextSize = compact and 9 or 10
 	label.TextXAlignment = Enum.TextXAlignment.Left
 	label.TextTruncate = Enum.TextTruncate.AtEnd
-	label.Position = UDim2.new(0, 20, 0, 0)
-	label.Size = UDim2.new(1, -20, 1, 0)
+	label.Position = UDim2.new(0, textX, 0, 0)
+	label.Size = UDim2.new(1, -textX, 1, 0)
 	label.ZIndex = 101
 	label.Parent = holder
 
@@ -5189,6 +5592,26 @@ function BananaHub.MakeKeyBadge(parent)
 		label.TextColor3 = colour
 		icon.ImageColor3 = colour
 		icon.Image = BananaHub.KeyIconFor(state)
+
+		-- The pill is a fixed slot in a rail that can be 76px wide, and
+		-- "LIFETIME" is the longest string it can carry. Measure it against the
+		-- label's real width and step the size down rather than letting
+		-- TextTruncate cut it to "LIFETIM".
+		local room = label.AbsoluteSize.X
+		if room <= 0 then room = holder.AbsoluteSize.X - textX end
+		if room > 0 then
+			local size = compact and 9 or 10
+			while size > 7 do
+				local ok, bounds = pcall(function()
+					return TextService:GetTextSize(label.Text, size, Enum.Font.GothamBold,
+						Vector2.new(1000, 100))
+				end)
+				if not ok or type(bounds) ~= "Vector2" then break end
+				if bounds.X <= room then break end
+				size = size - 1
+			end
+			label.TextSize = size
+		end
 	end
 
 	refresh()
@@ -5637,14 +6060,48 @@ function BananaHub:KeyGate(opts)
 	backdrop.ZIndex = 1
 	backdrop.Parent = gui
 
+	-- Panel width follows the viewport instead of being a fixed 360px. On a
+	-- 390px phone a 360px card leaves only 15px of margin a side, and the key
+	-- box inside it is then too narrow for a 50-character key at a readable
+	-- size. The height is fixed because every row below is absolutely placed.
+	local liveCam = workspace.CurrentCamera
+	local liveVp = (liveCam and liveCam.ViewportSize) or viewport
+	local panelW = math.floor(math.clamp((liveVp.X or 800) - 48, 264, 360))
+	local padX = panelW < 330 and 14 or 16
+	-- The footnote wraps to two lines on a narrow panel, so its height is
+	-- measured rather than assumed: a fixed 24px box clipped the second line
+	-- ("open the key site") clean off the bottom of a phone prompt.
+	--
+	-- 200 is where the footnote starts (everything above it is absolutely
+	-- placed), +12 is the panel's bottom padding.
+	local footText = "One key works on one device. To unlink this device, open the key site."
+	local footSize = 9
+	local footH = math.max(14,
+		wrappedHeight(footText, footSize, Enum.Font.Gotham, panelW - (padX * 2)))
+	local panelH = 200 + footH + 12
+
 	local panel = Instance.new("Frame")
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
 	panel.Position = UDim2.fromScale(0.5, 0.5)
-	panel.Size = UDim2.fromOffset(360, 236)
+	panel.Size = UDim2.fromOffset(panelW, panelH)
 	panel.BackgroundColor3 = C_BG
 	panel.BorderSizePixel = 0
 	panel.ZIndex = 2
 	panel.Parent = gui
+
+	-- The rows below are absolutely placed, so the panel cannot simply get
+	-- shorter. A landscape phone is only ~390px tall and the prompt is 236 plus
+	-- margins, which fits; a very short window (or a small in-game viewport)
+	-- would clip the footer, so the whole panel is scaled to fit instead.
+	do
+		local vpH = liveVp.Y or 800
+		local roomH = vpH - 32
+		if roomH > 0 and roomH < panelH then
+			local panelScale = Instance.new("UIScale")
+			panelScale.Scale = math.clamp(roomH / panelH, 0.62, 1)
+			panelScale.Parent = panel
+		end
+	end
 
 	local panelCorner = Instance.new("UICorner")
 	panelCorner.CornerRadius = UDim.new(0, 10)
@@ -5659,7 +6116,7 @@ function BananaHub:KeyGate(opts)
 	local logo = Instance.new("ImageLabel")
 	logo.BackgroundTransparency = 1
 	logo.Image = "rbxassetid://125326185088678"
-	logo.Position = UDim2.new(0, 16, 0, 14)
+	logo.Position = UDim2.new(0, padX, 0, 14)
 	logo.Size = UDim2.fromOffset(28, 28)
 	logo.ZIndex = 4
 	logo.Parent = panel
@@ -5671,8 +6128,8 @@ function BananaHub:KeyGate(opts)
 	title.TextColor3 = C_TEXT
 	title.TextSize = 14
 	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.Position = UDim2.new(0, 54, 0, 13)
-	title.Size = UDim2.new(1, -110, 0, 16)
+	title.Position = UDim2.new(0, padX + 38, 0, 13)
+	title.Size = UDim2.new(1, -(padX + 38) - 40, 0, 16)
 	title.ZIndex = 4
 	title.Parent = panel
 
@@ -5683,8 +6140,9 @@ function BananaHub:KeyGate(opts)
 	subtitle.TextColor3 = C_GOLD
 	subtitle.TextSize = 10
 	subtitle.TextXAlignment = Enum.TextXAlignment.Left
-	subtitle.Position = UDim2.new(0, 54, 0, 30)
-	subtitle.Size = UDim2.new(1, -110, 0, 12)
+	subtitle.TextTruncate = Enum.TextTruncate.AtEnd
+	subtitle.Position = UDim2.new(0, padX + 38, 0, 30)
+	subtitle.Size = UDim2.new(1, -(padX + 38) - 40, 0, 12)
 	subtitle.ZIndex = 4
 	subtitle.Parent = panel
 
@@ -5696,7 +6154,7 @@ function BananaHub:KeyGate(opts)
 	closeBtn.TextColor3 = C_MUTED
 	closeBtn.TextSize = 13
 	closeBtn.AnchorPoint = Vector2.new(1, 0)
-	closeBtn.Position = UDim2.new(1, -12, 0, 14)
+	closeBtn.Position = UDim2.new(1, -10, 0, 14)
 	closeBtn.Size = UDim2.fromOffset(22, 22)
 	closeBtn.ZIndex = 5
 	closeBtn.Parent = panel
@@ -5704,8 +6162,8 @@ function BananaHub:KeyGate(opts)
 	local divider = Instance.new("Frame")
 	divider.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 	divider.BorderSizePixel = 0
-	divider.Position = UDim2.new(0, 16, 0, 56)
-	divider.Size = UDim2.new(1, -32, 0, 1)
+	divider.Position = UDim2.new(0, padX, 0, 56)
+	divider.Size = UDim2.new(1, -(padX * 2), 0, 1)
 	divider.ZIndex = 3
 	divider.Parent = panel
 
@@ -5719,8 +6177,8 @@ function BananaHub:KeyGate(opts)
 	keyLabel.TextColor3 = C_MUTED
 	keyLabel.TextSize = 10
 	keyLabel.TextXAlignment = Enum.TextXAlignment.Left
-	keyLabel.Position = UDim2.new(0, 16, 0, 66)
-	keyLabel.Size = UDim2.new(1, -32, 0, 12)
+	keyLabel.Position = UDim2.new(0, padX, 0, 66)
+	keyLabel.Size = UDim2.new(1, -(padX * 2), 0, 12)
 	keyLabel.ZIndex = 4
 	keyLabel.Parent = panel
 
@@ -5733,8 +6191,8 @@ function BananaHub:KeyGate(opts)
 	inputFrame.BackgroundColor3 = C_SURFACE
 	inputFrame.BorderSizePixel = 0
 	inputFrame.ClipsDescendants = true
-	inputFrame.Position = UDim2.new(0, 16, 0, 82)
-	inputFrame.Size = UDim2.new(1, -32, 0, 34)
+	inputFrame.Position = UDim2.new(0, padX, 0, 82)
+	inputFrame.Size = UDim2.new(1, -(padX * 2), 0, 34)
 	inputFrame.ZIndex = 3
 	inputFrame.Parent = panel
 	local inputCorner = Instance.new("UICorner")
@@ -5809,8 +6267,8 @@ function BananaHub:KeyGate(opts)
 	status.TextSize = 10
 	status.TextXAlignment = Enum.TextXAlignment.Left
 	status.TextTruncate = Enum.TextTruncate.AtEnd
-	status.Position = UDim2.new(0, 16, 0, 130)
-	status.Size = UDim2.new(1, -32, 0, 14)
+	status.Position = UDim2.new(0, padX, 0, 130)
+	status.Size = UDim2.new(1, -(padX * 2), 0, 14)
 	status.ZIndex = 4
 	status.Parent = panel
 
@@ -5833,25 +6291,28 @@ function BananaHub:KeyGate(opts)
 		return b
 	end
 
+	-- Two buttons split the panel with an 8px gap between them. The negative
+	-- offsets are the panel padding on each side, so the pair stays flush with
+	-- the key box above whatever the panel width turns out to be.
 	local continueBtn = button("CONTINUE",
-		UDim2.new(0, 16, 0, 154), UDim2.new(0.52, -20, 0, 34),
+		UDim2.new(0, padX, 0, 154), UDim2.new(0.52, -(padX + 4), 0, 34),
 		Color3.fromRGB(255, 255, 255), Color3.fromRGB(10, 10, 10))
 
 	local getKeyBtn = button("GET KEY",
-		UDim2.new(1, -16, 0, 154), UDim2.new(0.44, -12, 0, 34),
+		UDim2.new(1, -padX, 0, 154), UDim2.new(0.48, -(padX + 4), 0, 34),
 		C_SURFACE, C_TEXT)
 	getKeyBtn.AnchorPoint = Vector2.new(1, 0)
 
 	local footer = Instance.new("TextLabel")
 	footer.BackgroundTransparency = 1
 	footer.Font = Enum.Font.Gotham
-	footer.Text = "One key works on one device. To unlink this device, open the key site."
+	footer.Text = footText
 	footer.TextColor3 = Color3.fromRGB(90, 90, 90)
-	footer.TextSize = 9
+	footer.TextSize = footSize
 	footer.TextXAlignment = Enum.TextXAlignment.Left
 	footer.TextWrapped = true
-	footer.Position = UDim2.new(0, 16, 0, 200)
-	footer.Size = UDim2.new(1, -32, 0, 24)
+	footer.Position = UDim2.new(0, padX, 0, 200)
+	footer.Size = UDim2.new(1, -(padX * 2), 0, footH)
 	footer.ZIndex = 4
 	footer.Parent = panel
 
@@ -6069,5 +6530,5 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_31"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_35"
 return BananaHub
