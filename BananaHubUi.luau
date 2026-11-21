@@ -16,11 +16,11 @@
     before they create their window.
 ]]
 
--- BANANAHUB_BUILD_BLACK_35
+-- BANANAHUB_BUILD_BLACK_37
 -- Build label, reported back so a loader can record which copy it got. It is
 -- informational only: no script pins itself to this string any more, so a UI
 -- fix only needs this file uploaded - nothing else has to be edited.
-local BUILD = "black-35-compact"
+local BUILD = "black-37-compact"
 
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
@@ -623,8 +623,12 @@ BananaHub.DetectDevice = DetectDevice
 function BananaHub:MakeNotify(NotifyConfig)
 	NotifyConfig = NotifyConfig or {}
 	NotifyConfig.Title = NotifyConfig.Title or "Banana Hub"
-	NotifyConfig.Description = NotifyConfig.Description or "Notification"
-	NotifyConfig.Content = NotifyConfig.Content or "Content"
+	-- No placeholder text for these two. The old "Notification"/"Content"
+	-- defaults meant a caller that passed only a title got a made-up subtitle
+	-- and a made-up body on the card; an empty line is the honest result and
+	-- the card shrinks to fit it.
+	NotifyConfig.Description = NotifyConfig.Description or ""
+	NotifyConfig.Content = NotifyConfig.Content or ""
 	NotifyConfig.Color = NotifyConfig.Color or Color3.fromRGB(255, 255, 255)
 	NotifyConfig.Time = NotifyConfig.Time or 0.5
 	NotifyConfig.Delay = NotifyConfig.Delay or 5
@@ -709,11 +713,25 @@ function BananaHub:MakeNotify(NotifyConfig)
 		local titleSize = compact and 12 or 13
 		local descSize = compact and 10 or 11
 		local bodySize = compact and 10 or 11
+
+		-- A caller with only ONE line of text sometimes hands the same string in
+		-- as both the description and the content (BananaVDFree's NotifyNow did
+		-- exactly that), which drew the sentence twice: once as the coloured
+		-- subtitle, again as the body. When the two are identical the body is
+		-- pure duplication, so it is dropped and the card renders as title plus
+		-- one line.
+		local descText = tostring(NotifyConfig.Description or "")
+		local bodyText = tostring(NotifyConfig.Content or "")
+		if bodyText == descText then bodyText = "" end
+
 		-- The header is two stacked lines: the title row, then the coloured
 		-- description under it. These were a single number before, which made the
 		-- title and the description overlap by a few pixels.
+		--
+		-- An empty description takes no height at all: every caller that passes
+		-- only Content used to get a blank 15px band between title and body.
 		local titleH = compact and 17 or 19
-		local descH = descSize + 5
+		local descH = (descText == "") and 0 or (descSize + 5)
 		local headerH = titleH + descH
 		local closeSize = compact and 18 or 20
 
@@ -844,7 +862,7 @@ function BananaHub:MakeNotify(NotifyConfig)
 		-- off the right edge of a narrow phone card, and the old single
 		-- `headerH` made the two lines overlap.
 		TextLabel1.Font = Enum.Font.GothamMedium
-		TextLabel1.Text = NotifyConfig.Description
+		TextLabel1.Text = descText
 		TextLabel1.TextColor3 = NotifyConfig.Color
 		TextLabel1.TextSize = descSize
 		TextLabel1.TextXAlignment = Enum.TextXAlignment.Left
@@ -853,6 +871,7 @@ function BananaHub:MakeNotify(NotifyConfig)
 		TextLabel1.BackgroundTransparency = 1
 		TextLabel1.Size = UDim2.new(1, -(padX * 2), 0, descH)
 		TextLabel1.Position = UDim2.new(0, padX, 0, titleH)
+		TextLabel1.Visible = descH > 0
 		TextLabel1.Parent = Top
 
 		Close.Text = ""
@@ -881,22 +900,31 @@ function BananaHub:MakeNotify(NotifyConfig)
 		TextLabel2.Font = Enum.Font.Gotham
 		TextLabel2.TextColor3 = Color3.fromRGB(160, 160, 165)
 		TextLabel2.TextSize = bodySize
-		TextLabel2.Text = NotifyConfig.Content
+		TextLabel2.Text = bodyText
 		TextLabel2.TextXAlignment = Enum.TextXAlignment.Left
 		TextLabel2.TextYAlignment = Enum.TextYAlignment.Top
 		TextLabel2.TextWrapped = true
 		TextLabel2.BackgroundTransparency = 1
 		TextLabel2.Position = UDim2.new(0, padX, 0, bodyTop)
+		TextLabel2.Visible = bodyText ~= ""
 		TextLabel2.Parent = ContentFrame
 
-		local bodyHeight = wrappedHeight(tostring(NotifyConfig.Content or ""), bodySize,
-			Enum.Font.Gotham, bodyWidth)
+		local bodyHeight = 0
+		if bodyText ~= "" then
+			bodyHeight = wrappedHeight(bodyText, bodySize, Enum.Font.Gotham, bodyWidth)
+		end
 		TextLabel2.Size = UDim2.new(1, -(padX * 2), 0, bodyHeight)
 
-		-- Card height: header + subtitle + body + bottom padding, with a floor so
-		-- a one-word message still reads as a card rather than a sliver.
-		local cardHeight = bodyTop + bodyHeight + (compact and 8 or 10)
-		if cardHeight < (compact and 58 or 62) then cardHeight = compact and 58 or 62 end
+		-- Card height: header + body + bottom padding. A card with only a
+		-- description (no body) is sized to its header, so it does not get the
+		-- two-line floor and sit there half empty.
+		local cardHeight
+		if bodyText ~= "" then
+			cardHeight = bodyTop + bodyHeight + (compact and 8 or 10)
+			if cardHeight < (compact and 58 or 62) then cardHeight = compact and 58 or 62 end
+		else
+			cardHeight = headerH + (compact and 10 or 12)
+		end
 		-- Never taller than the stack can hold: a long message on a phone would
 		-- otherwise fill the whole screen and push the older cards off it.
 		local stackMax = NotifyGuiRef.NotifyLayout.AbsoluteSize.Y
@@ -6530,5 +6558,5 @@ end
 
 -- Let the loader confirm which build it got.
 BananaHub.Build = BUILD
-BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_35"
+BananaHub.BuildMarker = "BANANAHUB_BUILD_BLACK_37"
 return BananaHub
